@@ -376,6 +376,7 @@ def build_excel(papers, stats, dupe_list):
 
 
 
+
 # ── UI ────────────────────────────────────────────────────────────────────────
 
 st.markdown("""
@@ -385,7 +386,7 @@ st.markdown("""
 [class*="css"], .stApp { font-family: 'Fraunces', serif; background: #f7f4ef; color: #1a1a2e; }
 h1,h2,h3 { font-family: 'JetBrains Mono', monospace; }
 .stApp { background: #f7f4ef; }
-.tag { display:inline-block;padding:3px 10px;border-radius:4px;font-family:'JetBrains Mono';font-size:0.72rem;font-weight:700;margin:2px; }
+.tag{display:inline-block;padding:3px 10px;border-radius:4px;font-family:'JetBrains Mono';font-size:0.72rem;font-weight:700;margin:2px;}
 .tag-springer{background:#e8f4d4;color:#2d6a2d;border:1px solid #2d6a2d;}
 .tag-acm{background:#fde8e8;color:#8b1a1a;border:1px solid #8b1a1a;}
 .tag-scopus{background:#e8eef8;color:#1a3a8b;border:1px solid #1a3a8b;}
@@ -394,33 +395,16 @@ h1,h2,h3 { font-family: 'JetBrains Mono', monospace; }
 .stat-num{font-family:'JetBrains Mono';font-size:1.8rem;color:#1a1a2e;font-weight:700;}
 .stat-lbl{font-size:0.75rem;color:#888;text-transform:uppercase;letter-spacing:1px;}
 .warn-box{background:#fff8e8;border:1px solid #e0c050;border-radius:6px;padding:10px 14px;margin:6px 0;font-size:0.85rem;}
-/* Tab styling — visible colors */
-button[data-baseweb="tab"] {
-    font-family: 'JetBrains Mono', monospace !important;
-    font-size: 0.9rem !important;
-    font-weight: 600 !important;
-    padding: 10px 24px !important;
-    border-radius: 6px 6px 0 0 !important;
-    background: #e0d8cc !important;
-    color: #555 !important;
-    border: none !important;
-}
-button[data-baseweb="tab"][aria-selected="true"] {
-    background: #1F4E79 !important;
-    color: #ffffff !important;
-}
-div[data-baseweb="tab-list"] {
-    background: transparent !important;
-    gap: 4px !important;
-}
-section[data-testid="stFileUploadDropzone"]{background:#fff !important;border:2px dashed #c8b99a !important;}
 </style>
 """, unsafe_allow_html=True)
+
+import requests as _req, time as _time, re as _re
 
 st.markdown("# 🔬 Systematic Review Bot")
 st.markdown("Upload CSV/BIB files → parse → fetch abstracts → download PRISMA Excel")
 st.markdown("---")
 
+# ── File upload ───────────────────────────────────────────────────────────────
 st.markdown("### Step 1 — Upload Files")
 st.markdown("Name files like `springer_d1q1.csv`, `acm_d1q2.bib`, `scopus_d2q1.csv`, `scholar_d3q1.csv`")
 st.caption("Supports: Springer CSV · Scopus CSV · Google Scholar CSV (Publish or Perish) · ACM BibTeX")
@@ -429,30 +413,26 @@ uploaded = st.file_uploader("Drop all files here", type=["csv","bib"],
                               accept_multiple_files=True, label_visibility="collapsed")
 
 if uploaded:
-    import requests as _req, time as _time, re as _re
+    st.markdown("---")
 
-    # ── Step 1: Parse files ───────────────────────────────────────────────────
-    all_papers = []
-    stats = {"identification": {}, "total_raw": 0, "duplicates": 0, "after_dedup": 0}
-    parse_log = []
+    # ── Parse ─────────────────────────────────────────────────────────────────
+    all_papers, stats, parse_log = [], {"identification":{}, "total_raw":0, "duplicates":0, "after_dedup":0}, []
 
     for f in uploaded:
         fname = f.name.lower()
         qid = "UNKNOWN"
         for q in ["d1q1","d1q2","d2q1","d2q2","d2q3","d3q1","d3q2","d3q3"]:
             if q in fname: qid = q.upper(); break
-        content_f = f.read().decode("utf-8", errors="replace")
+        cf = f.read().decode("utf-8", errors="replace")
         if fname.endswith(".bib"):
-            papers = parse_bib(content_f, qid); db = "ACM"
+            papers = parse_bib(cf, qid); db = "ACM"
         else:
-            ctype = detect_csv_type(content_f, fname)
-            if ctype == "springer":
-                papers = parse_springer_csv(content_f, qid); db = "Springer"
+            ctype = detect_csv_type(cf, fname)
+            if ctype == "springer":   papers = parse_springer_csv(cf, qid);   db = "Springer"
             elif ctype in ("scopus","scopus_pop"):
-                papers = parse_scopus_pop_csv(content_f, qid) if ctype=="scopus_pop" else parse_scopus_csv(content_f, qid)
+                papers = parse_scopus_pop_csv(cf, qid) if ctype=="scopus_pop" else parse_scopus_csv(cf, qid)
                 db = "Elsevier/Scopus"
-            else:
-                papers = parse_scholar_csv(content_f, qid); db = "Google Scholar"
+            else:                     papers = parse_scholar_csv(cf, qid);    db = "Google Scholar"
         parse_log.append((f.name, db, qid, len(papers)))
         stats["identification"].setdefault(db,{}).setdefault(qid,0)
         stats["identification"][db][qid] += len(papers)
@@ -463,13 +443,13 @@ if uploaded:
     missing_year = [p for p in unique if not str(p.get("year","")).strip().isdigit() or not is_valid_year(p.get("year",""))]
     missing_doi  = [p for p in unique if not p.get("doi","").strip()]
 
-    # ── Step 2: Parse log ─────────────────────────────────────────────────────
+    # ── Show parse log ────────────────────────────────────────────────────────
     st.markdown("### Step 2 — Files Parsed")
     for fname, db, qid, n in parse_log:
         db_cls = {"Springer":"springer","ACM":"acm","Elsevier/Scopus":"scopus","Google Scholar":"scholar"}.get(db,"springer")
-        st.markdown(f'`{fname}` → <span class="tag tag-{db_cls}">{db}</span> `{qid}` → **{n} papers**', unsafe_allow_html=True)
+        st.markdown(f"`{fname}` → <span class='tag tag-{db_cls}'>{db}</span> `{qid}` → **{n} papers**", unsafe_allow_html=True)
 
-    # ── Step 3: Summary ───────────────────────────────────────────────────────
+    # ── Summary ───────────────────────────────────────────────────────────────
     st.markdown("---")
     st.markdown("### Step 3 — Summary")
     c1,c2,c3,c4 = st.columns(4)
@@ -479,38 +459,28 @@ if uploaded:
     with c4:
         d_counts = {}
         for p in unique:
-            d = p.get("dimension","")[:2]
-            d_counts[d] = d_counts.get(d,0)+1
+            d = p.get("dimension","")[:2]; d_counts[d] = d_counts.get(d,0)+1
         summary = " / ".join(f"{k}:{v}" for k,v in sorted(d_counts.items()))
         st.markdown(f'<div class="stat-box"><div class="stat-num" style="font-size:1.1rem">{summary}</div><div class="stat-lbl">By Dimension</div></div>', unsafe_allow_html=True)
 
-    st.markdown("")
-    c5,c6,c7 = st.columns(3)
-    with c5: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#2E4057">{len(dupe_list)}</div><div class="stat-lbl">Duplicates Sheet</div></div>', unsafe_allow_html=True)
-    with c6: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#7F6000">{len(missing_year)}</div><div class="stat-lbl">⚠ Missing Year</div></div>', unsafe_allow_html=True)
-    with c7: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#8B1A1A">{len(missing_doi)}</div><div class="stat-lbl">⚠ Missing DOI</div></div>', unsafe_allow_html=True)
-
     if missing_year:
-        st.markdown(f'<div class="warn-box">⚠️ <b>{len(missing_year)} papers</b> have missing/invalid year — flagged in Missing_Year sheet</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="warn-box">⚠️ <b>{len(missing_year)} papers</b> missing year → flagged in Missing_Year sheet</div>', unsafe_allow_html=True)
     if missing_doi:
-        st.markdown(f'<div class="warn-box">⚠️ <b>{len(missing_doi)} papers</b> have no DOI — flagged in Missing_DOI sheet</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="warn-box">⚠️ <b>{len(missing_doi)} papers</b> missing DOI → flagged in Missing_DOI sheet</div>', unsafe_allow_html=True)
 
-    # ── Step 4: Fetch abstracts ───────────────────────────────────────────────
+    # ── GENERATE BUTTON ───────────────────────────────────────────────────────
     st.markdown("---")
-    st.markdown("### Step 4 — Fetch Missing Abstracts")
+    need_abstract = [p for p in unique if p.get("doi","").strip() or p.get("url","").strip()]
+    est_mins = max(1, len(need_abstract) // 10)
+    st.markdown(f"### Step 4 — Generate Excel")
+    st.markdown(f"Will fetch abstracts for **{len(need_abstract)} papers** via DOI/URL (~{est_mins} min)")
 
-    papers_need_abstract = [p for p in unique if not p.get("abstract","").strip() and (p.get("doi","").strip() or p.get("url","").strip())]
-    papers_have_abstract = [p for p in unique if p.get("abstract","").strip()]
+    fetch_toggle = st.checkbox("Fetch abstracts automatically", value=True)
 
-    a1,a2,a3 = st.columns(3)
-    with a1: st.markdown(f'<div class="stat-box"><div class="stat-num">{len(unique)}</div><div class="stat-lbl">Total Papers</div></div>', unsafe_allow_html=True)
-    with a2: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#2d6a2d">{len(papers_have_abstract)}</div><div class="stat-lbl">Have Abstract</div></div>', unsafe_allow_html=True)
-    with a3: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#8B1A1A">{len(papers_need_abstract)}</div><div class="stat-lbl">Need Abstract</div></div>', unsafe_allow_html=True)
+    generate_clicked = st.button("🚀 Generate Excel", type="primary", use_container_width=True)
 
-    fetch_abstracts = st.checkbox(f"Auto-fetch {len(papers_need_abstract)} missing abstracts (takes ~{max(1, len(papers_need_abstract)//10)} min)", value=True)
-
-    if fetch_abstracts and len(papers_need_abstract) > 0:
-
+    if generate_clicked:
+        # Store result in session state so download doesn't re-trigger
         def fetch_by_doi(doi):
             if not doi: return ""
             try:
@@ -546,87 +516,81 @@ if uploaded:
             except: pass
             return ""
 
-        prog_bar  = st.progress(0)
-        stat_txt  = st.empty()
-        pct_txt   = st.empty()
-        found_count = 0
-        start_time  = _time.time()
+        if fetch_toggle and need_abstract:
+            prog  = st.progress(0)
+            s_txt = st.empty()
+            p_txt = st.empty()
+            found = 0
+            t0    = _time.time()
 
-        for i, p in enumerate(papers_need_abstract):
-            doi = p.get("doi","").strip()
-            url = p.get("url","").strip()
-            title = p.get("title","")[:40]
+            for i, p in enumerate(need_abstract):
+                doi = p.get("doi","").strip()
+                url = p.get("url","").strip()
+                title = p.get("title","")[:40]
+                elapsed = _time.time() - t0
+                if i > 0:
+                    rem = (elapsed/i) * (len(need_abstract)-i)
+                    m,s = divmod(int(rem),60)
+                    t_str = f"{m}m {s}s remaining"
+                else:
+                    t_str = "estimating..."
+                pct = int((i+1)/len(need_abstract)*100)
+                s_txt.markdown(f"**({i+1}/{len(need_abstract)})** `{title}...`")
+                p_txt.markdown(f"**{pct}%** · ⏱ {t_str} · ✅ {found} fetched")
+                prog.progress(pct/100)
 
-            # Estimate time remaining
-            elapsed = _time.time() - start_time
-            if i > 0:
-                avg = elapsed / i
-                remaining = avg * (len(papers_need_abstract) - i)
-                mins, secs = divmod(int(remaining), 60)
-                time_str = f"{mins}m {secs}s remaining"
-            else:
-                time_str = "estimating..."
+                abstract = ""
+                if doi:
+                    abstract = fetch_by_doi(doi)
+                    _time.sleep(0.3)
+                if not abstract and url:
+                    abstract = fetch_by_url(url)
+                    _time.sleep(0.4)
+                if abstract:
+                    p["abstract"] = abstract; found += 1
 
-            pct = int((i+1)/len(papers_need_abstract)*100)
-            stat_txt.markdown(f"**({i+1}/{len(papers_need_abstract)})** `{title}...`")
-            pct_txt.markdown(f"**{pct}%** complete · ⏱ {time_str} · ✅ {found_count} fetched so far")
-            prog_bar.progress(pct/100)
+            prog.progress(1.0)
+            total_sec = int(_time.time()-t0)
+            s_txt.markdown(f"✅ **Done!** Fetched {found}/{len(need_abstract)} abstracts in {total_sec}s")
+            p_txt.empty()
 
-            abstract = ""
-            if doi:
-                abstract = fetch_by_doi(doi)
-                _time.sleep(0.3)
-            if not abstract and url:
-                abstract = fetch_by_url(url)
-                _time.sleep(0.4)
+        # Build Excel once, store in session state
+        excel_bytes = build_excel(unique, stats, dupe_list)
+        st.session_state["excel_bytes"] = excel_bytes
+        st.session_state["excel_fname"] = f"systematic_review_{datetime.now():%Y%m%d_%H%M}.xlsx"
+        st.session_state["excel_ready"] = True
+        abstracts_filled = sum(1 for p in unique if p.get("abstract","").strip())
+        st.session_state["abstracts_filled"] = abstracts_filled
+        st.session_state["total_papers"] = stats["after_dedup"]
+        st.session_state["dupe_count"] = len(dupe_list)
 
-            if abstract:
-                p["abstract"] = abstract
-                p["abstract_fetched"] = True
-                found_count += 1
-
-        prog_bar.progress(1.0)
-        total_time = int(_time.time() - start_time)
-        stat_txt.markdown(f"✅ **Done!** Fetched {found_count}/{len(papers_need_abstract)} abstracts in {total_time}s")
-        pct_txt.empty()
-
-    # ── Step 5: Preview ───────────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown("### Step 5 — Preview (first 100 papers)")
-    df = pd.DataFrame([{
-        "DB": p.get("database",""), "Year": p.get("year",""),
-        "Title": p.get("title","")[:70], "Authors": p.get("authors","")[:40],
-        "DOI": p.get("doi",""),
-        "Abstract": "✅" if p.get("abstract","").strip() else "❌",
-    } for p in unique[:100]])
-    st.dataframe(df, use_container_width=True, height=300)
-
-    # ── Step 6: Download ──────────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown("### Step 6 — Download PRISMA Excel")
-    sheets = {
-        "PRISMA_Flow":        "PRISMA 2020 tracker",
-        "Screening_Sheet":    f"{len(unique)} papers — all included",
-        "Duplicates_Removed": f"{len(dupe_list)} duplicates",
-        "Missing_Year":       f"{len(missing_year)} — check year",
-        "Missing_DOI":        f"{len(missing_doi)} — add DOI",
-        "Concept_Matrix_W&W": "Webster & Watson matrix",
-        "Exclusion_Criteria": "E1-E8 reference",
-    }
-    colors = {"Duplicates_Removed":"#E8EAF6","Missing_Year":"#FFF8E8","Missing_DOI":"#FFE8E8"}
-    for sheet,desc in sheets.items():
-        color = colors.get(sheet,"#f0f7ff")
-        st.markdown(f'<div style="background:{color};border-radius:4px;padding:6px 12px;margin:3px 0;font-size:0.85rem"><b>{sheet}</b> — {desc}</div>', unsafe_allow_html=True)
-
-    st.markdown("")
-    excel_bytes = build_excel(unique, stats, dupe_list)
-    fname_out = f"systematic_review_{datetime.now():%Y%m%d_%H%M}.xlsx"
-    st.download_button("📥 Download PRISMA Excel", data=excel_bytes, file_name=fname_out,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True, type="primary")
-
-    abstracts_filled = sum(1 for p in unique if p.get("abstract","").strip())
-    st.success(f"✅ {stats['after_dedup']} papers · {abstracts_filled} with abstract · {len(dupe_list)} dupes removed")
+    # ── Download (only shown after Generate) ─────────────────────────────────
+    if st.session_state.get("excel_ready"):
+        st.markdown("---")
+        st.markdown("### Step 5 — Download")
+        sheets = {
+            "PRISMA_Flow":"PRISMA 2020 tracker",
+            "Screening_Sheet":f"{st.session_state.get('total_papers',0)} papers",
+            "Duplicates_Removed":f"{st.session_state.get('dupe_count',0)} duplicates",
+            "Missing_Year":f"{len(missing_year)} — check year",
+            "Missing_DOI":f"{len(missing_doi)} — add DOI",
+            "Concept_Matrix_W&W":"Webster & Watson matrix",
+            "Exclusion_Criteria":"E1-E8 reference",
+        }
+        colors = {"Duplicates_Removed":"#E8EAF6","Missing_Year":"#FFF8E8","Missing_DOI":"#FFE8E8"}
+        for sheet,desc in sheets.items():
+            color = colors.get(sheet,"#f0f7ff")
+            st.markdown(f'<div style="background:{color};border-radius:4px;padding:6px 12px;margin:3px 0;font-size:0.85rem"><b>{sheet}</b> — {desc}</div>', unsafe_allow_html=True)
+        st.markdown("")
+        st.download_button("📥 Download PRISMA Excel",
+            data=st.session_state["excel_bytes"],
+            file_name=st.session_state["excel_fname"],
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True, type="primary")
+        n = st.session_state.get("total_papers",0)
+        a = st.session_state.get("abstracts_filled",0)
+        d = st.session_state.get("dupe_count",0)
+        st.success(f"✅ {n} papers · {a} with abstract · {d} dupes removed")
 
 else:
     st.markdown("---")
