@@ -1,6 +1,7 @@
 """
-Systematic Review — File Importer v5 (Production-Ready)
-Comprehensive abstract fetching with multiple fallback strategies
+Systematic Review — File Importer v6 (Maximum Automation)
+3 Dimensions: D1 Standardization & AI, D2 Context Engineering, D3 Token Efficiency
+PRISMA 2020 + Webster & Watson Concept Matrix + Screening Columns + Word Template
 """
 
 import streamlit as st
@@ -18,12 +19,24 @@ QUERY_MAP = {
     "D3Q1": "D3_Token_Efficiency",   "D3Q2": "D3_Token_Efficiency",   "D3Q3": "D3_Token_Efficiency",
 }
 
+DIMENSION_NAMES = {
+    "D1": "D1_Standardization_AI",
+    "D2": "D2_Context_Engineering", 
+    "D3": "D3_Token_Efficiency"
+}
+
 EXCLUSION_CRITERIA = [
-    "E1: Outside year range (2015-2026)", "E2: Not English",
-    "E3: Not journal/conference/review paper", "E4: Not relevant to dimension topic",
-    "E5: Duplicate", "E6: Full text not accessible",
-    "E7: Abstract only / insufficient detail", "E8: Not peer-reviewed",
+    "E1: Outside year range (2015-2026)",
+    "E2: Not English",
+    "E3: Not journal/conference/review paper",
+    "E4: Not relevant to dimension topic",
+    "E5: Duplicate",
+    "E6: Full text not accessible",
+    "E7: Abstract only / insufficient detail",
+    "E8: Not peer-reviewed",
 ]
+
+SCREENING_STATUS = ["Pending", "Include", "Exclude"]
 
 # ── Parsers ───────────────────────────────────────────────────────────────────
 
@@ -43,6 +56,9 @@ def parse_springer_csv(content, query_id):
                 "type":     row.get("Content Type","").strip(),
                 "database": "Springer", "query_id": query_id,
                 "dimension": QUERY_MAP.get(query_id,""),
+                "screening_status": "Pending",
+                "exclusion_reason": "",
+                "notes": "",
             })
     except Exception as e:
         st.warning(f"Springer parse error: {e}")
@@ -64,6 +80,9 @@ def parse_scopus_csv(content, query_id):
                 "type":     row.get("Document Type","").strip(),
                 "database": "Elsevier/Scopus", "query_id": query_id,
                 "dimension": QUERY_MAP.get(query_id,""),
+                "screening_status": "Pending",
+                "exclusion_reason": "",
+                "notes": "",
             })
     except Exception as e:
         st.warning(f"Scopus parse error: {e}")
@@ -85,6 +104,9 @@ def parse_scopus_pop_csv(content, query_id):
                 "type":     row.get("Type","Article").strip(),
                 "database": "Elsevier/Scopus", "query_id": query_id,
                 "dimension": QUERY_MAP.get(query_id,""),
+                "screening_status": "Pending",
+                "exclusion_reason": "",
+                "notes": "",
             })
     except Exception as e:
         st.warning(f"Scopus PoP parse error: {e}")
@@ -106,6 +128,9 @@ def parse_scholar_csv(content, query_id):
                 "type":     row.get("Type","article").strip(),
                 "database": "Google Scholar", "query_id": query_id,
                 "dimension": QUERY_MAP.get(query_id,""),
+                "screening_status": "Pending",
+                "exclusion_reason": "",
+                "notes": "",
             })
     except Exception as e:
         st.warning(f"Scholar parse error: {e}")
@@ -137,6 +162,9 @@ def parse_bib(content, query_id):
             "type":     "Conference Paper" if "inproceedings" in entry[:30].lower() else "Article",
             "database": "ACM", "query_id": query_id,
             "dimension": QUERY_MAP.get(query_id,""),
+            "screening_status": "Pending",
+            "exclusion_reason": "",
+            "notes": "",
         })
     return [p for p in papers if p["title"]]
 
@@ -187,10 +215,9 @@ from bs4 import BeautifulSoup
 
 _lock = threading.Lock()
 _request_times = []
-MAX_RPS = 3  # Conservative rate limit
+MAX_RPS = 3
 
 def rate_limit():
-    """Simple rate limiter to avoid being blocked"""
     with _lock:
         now = time.time()
         _request_times[:] = [t for t in _request_times if now - t < 1.0]
@@ -215,23 +242,18 @@ def clean_abstract(text):
     return text
 
 def normalize_doi(doi):
-    """Clean and normalize DOI string"""
     if not doi:
         return ""
     doi = doi.strip()
-    # Remove common suffixes that aren't part of the DOI
     doi = re.sub(r'/(abstract|full|pdf|reference|v2|v1|fulltext|advance-article-abstract|article-abstract|article-pdf)$', '', doi, flags=re.I)
     doi = re.sub(r'\.short$', '', doi, flags=re.I)
     doi = re.sub(r'\.abstract$', '', doi, flags=re.I)
-    # Remove URL prefix if present
     doi = re.sub(r'^https?://(dx\.)?doi\.org/', '', doi, flags=re.I)
     doi = re.sub(r'^doi:', '', doi, flags=re.I)
-    # Remove trailing slashes
     doi = doi.rstrip('/')
     return doi
 
 def is_pdf_url(url):
-    """Check if URL is a PDF or leads to PDF"""
     if not url:
         return False
     url_lower = url.lower()
@@ -240,12 +262,11 @@ def is_pdf_url(url):
         '/download_pub', '/article-pdf/', '/fulltext.pdf',
         'pdf?download=1', '.pdf?download', '/pdfdownload',
         '/bitstream/handle/', '/download/',
-        '/doi/pdf/', '/doi/abs/',  # Scopus inward links often redirect to PDF
+        '/doi/pdf/', '/doi/abs/',
     ]
     return any(ind in url_lower for ind in pdf_indicators)
 
 def is_blocked_site(url):
-    """Sites that block scraping or require special handling"""
     if not url:
         return False
     blocked = [
@@ -261,13 +282,11 @@ def is_blocked_site(url):
     return any(b in url_lower for b in blocked)
 
 def is_scopus_inward(url):
-    """Scopus inward links are just redirects, not content pages"""
     if not url:
         return False
     return 'scopus.com/inward' in url.lower()
 
 def is_preprint_server(url):
-    """Preprint servers often have different structures"""
     if not url:
         return False
     preprints = [
@@ -278,26 +297,7 @@ def is_preprint_server(url):
     url_lower = url.lower()
     return any(p in url_lower for p in preprints)
 
-def is_institutional_repo(url):
-    """Institutional repositories often have minimal metadata"""
-    if not url:
-        return False
-    repos = [
-        'theseus.fi', 'doria.fi', 'aaltodoc.aalto.fi', 'trepo.tuni.fi',
-        'lutpub.lut.fi', 'osuva.uwasa.fi', 'oulurepo.oulu.fi',
-        'ikee.lib.auth.gr', 'repository.', 'eprints.', 'wrap.warwick.ac.uk',
-        'stax.strath.ac.uk', 'journals.ekb.eg',
-        'uzpolymerjournal.com', 'llrjournal.com', 'jmacheng.not.pl',
-        'jisads.com', 'ijsrtjournal.com', 'irjms.com', 'ijeetc.com',
-        'ijama.in', 'ijsate.com', 'ijbei-journal.org', 'ijsir.org',
-        'inatgi.in', 'ajsat.org', 'cemrj.com', 'ceur-ws.org',
-        'journals.lww.com', 
-    ]
-    url_lower = url.lower()
-    return any(r in url_lower for r in repos)
-
 def fetch_with_retry(url, headers=None, timeout=15, max_retries=2):
-    """Fetch URL with retry logic and proper redirect handling"""
     if headers is None:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -328,7 +328,6 @@ def fetch_with_retry(url, headers=None, timeout=15, max_retries=2):
     return None
 
 def fetch_crossref(doi):
-    """Fetch abstract from CrossRef API"""
     if not doi: 
         return ""
     try:
@@ -350,10 +349,8 @@ def fetch_crossref(doi):
     return ""
 
 def fetch_semantic_scholar(doi):
-    """Fetch abstract from Semantic Scholar API"""
     if not doi: 
         return ""
-
     try:
         rate_limit()
         r = _req.get(
@@ -368,7 +365,6 @@ def fetch_semantic_scholar(doi):
                 return abstract
     except Exception:
         pass
-
     try:
         rate_limit()
         r = _req.get(
@@ -386,7 +382,6 @@ def fetch_semantic_scholar(doi):
     return ""
 
 def fetch_openalex(doi):
-    """Fetch abstract from OpenAlex API"""
     if not doi: 
         return ""
     try:
@@ -416,7 +411,6 @@ def fetch_openalex(doi):
     return ""
 
 def fetch_europepmc(doi):
-    """Fetch abstract from Europe PMC"""
     if not doi:
         return ""
     try:
@@ -437,25 +431,19 @@ def fetch_europepmc(doi):
     return ""
 
 def fetch_by_doi(doi):
-    """Try multiple APIs in order"""
     if not doi: 
         return ""
-
     for fetch_func in [fetch_crossref, fetch_semantic_scholar, fetch_openalex, fetch_europepmc]:
         abstract = fetch_func(doi)
         if abstract:
             return abstract
-
     return ""
 
 def scrape_abstract_from_html(html_content, url=""):
-    """Extract abstract from HTML using multiple strategies"""
     if not html_content:
         return ""
-
     try:
         soup = BeautifulSoup(html_content, "html.parser")
-
         for script in soup(["script", "style", "nav", "header", "footer"]):
             script.decompose()
 
@@ -485,7 +473,6 @@ def scrape_abstract_from_html(html_content, url=""):
                         text = el.get("content", "")
                     else:
                         text = el.get_text(" ", strip=True)
-
                     text = clean_abstract(text)
                     if len(text) > 80 and is_english(text) and len(text) < 5000:
                         return text
@@ -515,34 +502,26 @@ def scrape_abstract_from_html(html_content, url=""):
 
         if best_abstract:
             return clean_abstract(best_abstract)
-
     except Exception:
         pass
-
     return ""
 
 def fetch_by_url(url):
-    """Enhanced URL scraping with site-specific handling"""
     if not url: 
         return ""
-
     if is_pdf_url(url):
         return "[PDF - cannot extract abstract from PDF file]"
-
     if is_blocked_site(url):
         return "[Blocked site - requires login or anti-bot protection]"
-
     if is_scopus_inward(url):
         return "[Scopus inward link - redirect only, no content]"
 
     r = fetch_with_retry(url)
     if not r:
         return ""
-
     content_type = r.headers.get('Content-Type', '')
     if 'pdf' in content_type.lower():
         return "[PDF - cannot extract abstract from PDF file]"
-
     return scrape_abstract_from_html(r.text, url)
 
 def build_doi_url(doi):
@@ -554,32 +533,26 @@ def build_doi_url(doi):
     return f"https://doi.org/{doi}"
 
 def fetch_abstract_for_paper(paper):
-    """Fetch abstract for a single paper using all available methods"""
     doi = normalize_doi(paper.get("doi", ""))
     url = paper.get("url", "").strip()
 
-    # Try DOI-based APIs first (most reliable)
     if doi:
         abstract = fetch_by_doi(doi)
         if abstract: 
             return abstract
-
         doi_url = build_doi_url(doi)
         abstract = fetch_by_url(doi_url)
         if abstract and not abstract.startswith('['):
             return abstract
 
-    # Try original URL if different from doi.org and not problematic
     if url and url != build_doi_url(doi):
         if not is_pdf_url(url) and not is_blocked_site(url) and not is_scopus_inward(url):
             abstract = fetch_by_url(url)
             if abstract and not abstract.startswith('['):
                 return abstract
-
     return ""
 
 def fetch_abstracts_concurrent(papers, max_workers=3):
-    """Fetch abstracts concurrently with rate limiting"""
     results = {}
     found = 0
 
@@ -595,15 +568,15 @@ def fetch_abstracts_concurrent(papers, max_workers=3):
             results[idx] = abstract
             if abstract and not abstract.startswith('['):
                 found += 1
-
     return results, found
 
 # ── Excel Builder ─────────────────────────────────────────────────────────────
 
-def build_excel(papers, stats, dupe_list):
+def build_dimension_excel(papers, stats, dupe_list, dimension_name, dimension_code):
     import openpyxl
-    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, Protection
     from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.datavalidation import DataValidation
 
     H_FILL  = PatternFill("solid", start_color="1F4E79")
     H_FONT  = Font(bold=True, color="FFFFFF", name="Arial", size=10)
@@ -612,12 +585,17 @@ def build_excel(papers, stats, dupe_list):
     D_FILL  = PatternFill("solid", start_color="E8EAF6")
     THIN    = Side(style="thin", color="BFBFBF")
     BDR     = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
-    DIM_CLR = {"D1": "D6E4F0", "D2": "D5E8D4", "D3": "FFF2CC"}
-    PH_CLR  = {"Identification": "D6E4F0", "Screening": "D5E8D4", "Eligibility": "FFF2CC", "Included": "FCE4D6"}
+    PH_CLR  = {"Identification":"D6E4F0","Screening":"D5E8D4","Eligibility":"FFF2CC","Included":"FCE4D6"}
 
-    main_papers  = papers
-    missing_year = [p for p in papers if not str(p.get("year", "")).strip().isdigit() or not is_valid_year(p.get("year", ""))]
-    missing_doi  = [p for p in papers if not p.get("doi", "").strip()]
+    dim_papers = [p for p in papers if dimension_code in p.get("dimension", "")]
+    dim_dupes = [p for p in dupe_list if dimension_code in p.get("dimension", "")]
+
+    if not dim_papers:
+        return None
+
+    main_papers  = dim_papers
+    missing_year = [p for p in dim_papers if not str(p.get("year", "")).strip().isdigit() or not is_valid_year(p.get("year", ""))]
+    missing_doi  = [p for p in dim_papers if not p.get("doi", "").strip()]
 
     wb = openpyxl.Workbook()
 
@@ -630,6 +608,9 @@ def build_excel(papers, stats, dupe_list):
         ("DOI",            28),
         ("URL",            28),
         ("Abstract (snippet)", 50),
+        ("Screening Status", 14),
+        ("Exclusion Reason", 20),
+        ("Notes",          30),
     ]
 
     def write_screen(ws, paper_list, row_fill_fn=None, start_row=1):
@@ -647,7 +628,7 @@ def build_excel(papers, stats, dupe_list):
             if row_fill_fn:
                 fill = row_fill_fn(p)
             else:
-                fill = PatternFill("solid", start_color=DIM_CLR.get(p.get("dimension", "")[:2], "FFFFFF"))
+                fill = PatternFill("solid", start_color="FFFFFF")
 
             vals = [
                 p.get("database", ""),
@@ -658,6 +639,9 @@ def build_excel(papers, stats, dupe_list):
                 p.get("doi", ""),
                 p.get("url", "")[:100],
                 p.get("abstract", ""),
+                p.get("screening_status", "Pending"),
+                p.get("exclusion_reason", ""),
+                p.get("notes", ""),
             ]
             for ci, val in enumerate(vals, 1):
                 c = ws.cell(row=ri, column=ci, value=val)
@@ -668,18 +652,31 @@ def build_excel(papers, stats, dupe_list):
 
         ws.auto_filter.ref = f"A{start_row}:{get_column_letter(len(SCREEN_COLS))}{start_row+len(paper_list)}"
 
+        # Add data validation for Screening Status
+        if len(paper_list) > 0:
+            dv_status = DataValidation(type="list", formula1='"Pending,Include,Exclude"', allow_blank=True)
+            dv_status.error = "Please select from dropdown"
+            dv_status.errorTitle = "Invalid Entry"
+            ws.add_data_validation(dv_status)
+            dv_status.add(f'I{start_row+1}:I{start_row+len(paper_list)}')
+
+            # Add data validation for Exclusion Reason
+            dv_excl = DataValidation(type="list", formula1='"E1,E2,E3,E4,E5,E6,E7,E8,"', allow_blank=True)
+            ws.add_data_validation(dv_excl)
+            dv_excl.add(f'J{start_row+1}:J{start_row+len(paper_list)}')
+
     # ── Sheet 1: PRISMA Flow ──────────────────────────────────────────────────
     ws = wb.active
     ws.title = "PRISMA_Flow"
     ws.sheet_view.showGridLines = False
     ws.column_dimensions["A"].width = 3
-    ws["B2"].value = "PRISMA 2020 Flow Tracker"
+    ws["B2"].value = f"PRISMA 2020 Flow Tracker — {dimension_name}"
     ws["B2"].font = Font(bold=True, size=14, color="1F4E79", name="Arial")
     ws.merge_cells("B2:H2")
 
-    total_raw   = stats.get("total_raw", 0)
-    total_dupes = len(dupe_list)
-    after_dedup = stats.get("after_dedup", 0)
+    total_raw = len(dim_papers) + len(dim_dupes)
+    total_dupes = len(dim_dupes)
+    after_dedup = len(dim_papers)
 
     hdrs = ["Phase", "Step", "Database", "Query ID", "n (raw)", "n (after filter)", "Notes"]
     wids = [18, 42, 18, 12, 12, 16, 50]
@@ -692,25 +689,21 @@ def build_excel(papers, stats, dupe_list):
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.row_dimensions[4].height = 28
 
-    rows = []
-    for db, qc in stats.get("identification", {}).items():
-        for qid, n in qc.items():
-            rows.append(["Identification", f"Records identified: {db}", db, qid, n, "", ""])
-    rows += [
-        ["Identification", "Total records identified",         "All", "ALL", total_raw,   "", "Sum of all DB results"],
-        ["Identification", "Duplicate records removed",        "All", "ALL", total_dupes, "", "See Duplicates_Removed sheet"],
-        ["Identification", "Records after deduplication",      "All", "ALL", after_dedup, "", ""],
-        ["Screening",     "Records screened (title/abstract)", "All", "ALL", after_dedup, "", "Manual screening required"],
-        ["Screening",     "Missing year - manual check",      "All", "ALL", len(missing_year), "", "See Missing_Year sheet"],
-        ["Screening",     "Missing DOI - manual check",       "All", "ALL", len(missing_doi), "", "See Missing_DOI sheet"],
-        ["Screening",     "Records with year + DOI (main)",   "All", "ALL", len(main_papers), "", "See Screening_Sheet"],
-        ["Screening",     "Records excluded - title screen",  "All", "ALL", "", "", "Fill after manual screening"],
-        ["Screening",     "Records excluded - abstract",      "All", "ALL", "", "", "Fill after manual screening"],
-        ["Screening",     "Reports sought for retrieval",     "All", "ALL", "", "", ""],
-        ["Screening",     "Reports not retrieved",            "All", "ALL", "", "", ""],
-        ["Eligibility",   "Reports assessed for eligibility", "All", "ALL", "", "", ""],
-        ["Eligibility",   "Reports excluded with reasons",    "All", "ALL", "", "", "E1-E8 see Exclusion_Criteria"],
-        ["Included",      "Studies included in final review", "All", "ALL", "", "", "Fill after full screening"],
+    rows = [
+        ["Identification", f"Records identified: {dimension_name}", "All", "ALL", total_raw, "", "Sum of all DB results for this dimension"],
+        ["Identification", "Duplicate records removed", "All", "ALL", total_dupes, "", "See Duplicates_Removed sheet"],
+        ["Identification", "Records after deduplication", "All", "ALL", after_dedup, "", ""],
+        ["Screening", "Records screened (title/abstract)", "All", "ALL", after_dedup, "", "Manual screening required"],
+        ["Screening", "Missing year - manual check", "All", "ALL", len(missing_year), "", "See Missing_Year sheet"],
+        ["Screening", "Missing DOI - manual check", "All", "ALL", len(missing_doi), "", "See Missing_DOI sheet"],
+        ["Screening", "Records with year + DOI (main)", "All", "ALL", len(main_papers), "", "See Screening_Sheet"],
+        ["Screening", "Records excluded - title screen", "All", "ALL", "", "", "Fill after manual screening"],
+        ["Screening", "Records excluded - abstract", "All", "ALL", "", "", "Fill after manual screening"],
+        ["Screening", "Reports sought for retrieval", "All", "ALL", "", "", ""],
+        ["Screening", "Reports not retrieved", "All", "ALL", "", "", ""],
+        ["Eligibility", "Reports assessed for eligibility", "All", "ALL", "", "", ""],
+        ["Eligibility", "Reports excluded with reasons", "All", "ALL", "", "", "E1-E8 see Exclusion_Criteria"],
+        ["Included", "Studies included in final review", "All", "ALL", "", "", "Fill after full screening"],
     ]
     for ri, row in enumerate(rows, 5):
         fill = PatternFill("solid", start_color=PH_CLR.get(row[0], "FFFFFF"))
@@ -729,11 +722,11 @@ def build_excel(papers, stats, dupe_list):
 
     # ── Sheet 3: Duplicates Removed ───────────────────────────────────────────
     ws_dup = wb.create_sheet("Duplicates_Removed")
-    ws_dup["A1"].value = f"Duplicates removed ({len(dupe_list)}) — verify deduplication is correct"
+    ws_dup["A1"].value = f"Duplicates removed ({len(dim_dupes)}) — verify deduplication is correct"
     ws_dup["A1"].font = Font(bold=True, size=12, color="2E4057", name="Arial")
     ws_dup.merge_cells(f"A1:{get_column_letter(len(SCREEN_COLS))}1")
     ws_dup.row_dimensions[1].height = 20
-    write_screen(ws_dup, dupe_list, row_fill_fn=lambda p: D_FILL, start_row=2)
+    write_screen(ws_dup, dim_dupes, row_fill_fn=lambda p: D_FILL, start_row=2)
 
     # ── Sheet 4: Missing Year ─────────────────────────────────────────────────
     ws_my = wb.create_sheet("Missing_Year")
@@ -755,37 +748,44 @@ def build_excel(papers, stats, dupe_list):
     ws3 = wb.create_sheet("Concept_Matrix_W&W")
     ws3.column_dimensions["A"].width = 3
     ws3.column_dimensions["B"].width = 4
-    ws3["C2"].value = "Webster & Watson (2002) Concept Matrix"
+    ws3["C2"].value = f"Webster & Watson (2002) Concept Matrix — {dimension_name}"
     ws3["C2"].font = Font(bold=True, size=14, color="1F4E79", name="Arial")
     ws3.merge_cells("C2:T2")
-    ws3["C3"].value = "Add included papers as rows after screening. Mark with check where concept is addressed."
+    ws3["C3"].value = "After screening, add included papers as rows. Mark with 'X' where concept is addressed."
     ws3["C3"].font = Font(italic=True, size=9, color="595959")
 
-    concepts = [
-        "Data\nStandards", "AI-\nReadiness", "Machine-\nReadable", "Semantic\nAnnotation",
-        "Context\nEngineering", "Context\nWindow", "Prompt\nDesign", "Structured\nContext", "Knowledge\nRepresent.",
-        "Token\nEfficiency", "Context\nCompression", "Prompt\nCompression", "RAG", "Inference\nCost", "Answer\nQuality", "Hallucin-\nation"
-    ]
-    cfills = (["D6E4F0"] * 4) + ["D5E8D4"] * 5 + ["FFF2CC"] * 7
+    # Dimension-specific concepts
+    if dimension_code == "D1":
+        concepts = [
+            "Data\nStandards", "AI-\nReadiness", "Machine-\nReadable", "Semantic\nAnnotation",
+            "Standard-\nization", "Technical\nStandards", "Digital-\nReady", "AI-Native",
+            "Metadata", "Ontology", "Automation", "Compliance", "Validation",
+            "LLM", "Generative AI", "Interoperability"
+        ]
+        cfills = ["D6E4F0"] * 16
+    elif dimension_code == "D2":
+        concepts = [
+            "Context\nEngineering", "Context\nDesign", "Context\nConstruction",
+            "Structured\nData", "Knowledge\nRepresentation", "Context\nWindow",
+            "Context\nSelection", "Answer\nQuality", "Accuracy", "Hallucination",
+            "Semantic\nContext", "Context\nPackage", "Prompt\nContext",
+            "Efficiency", "Token\nEfficiency", "Cost"
+        ]
+        cfills = ["D5E8D4"] * 16
+    else:  # D3
+        concepts = [
+            "Token\nEfficiency", "Context\nCompression", "Prompt\nCompression",
+            "Answer\nQuality", "Accuracy", "Performance", "Cost\nEfficiency",
+            "Inference\nCost", "Token\nCost", "RAG", "Context\nSelection",
+            "Context\nPruning", "Question\nAnswering", "Document\nQA",
+            "LLM", "Retrieval"
+        ]
+        cfills = ["FFF2CC"] * 16
 
-    ws3.merge_cells("C5:F5")
+    ws3.merge_cells("C5:R5")
     c = ws3["C5"]
-    c.value = "D1: Standardization & AI"
+    c.value = f"{dimension_code}: {dimension_name}"
     c.fill = PatternFill("solid", start_color="1F4E79")
-    c.font = Font(bold=True, color="FFFFFF", name="Arial", size=9)
-    c.alignment = Alignment(horizontal="center")
-
-    ws3.merge_cells("G5:K5")
-    c = ws3["G5"]
-    c.value = "D2: Context Engineering"
-    c.fill = PatternFill("solid", start_color="375623")
-    c.font = Font(bold=True, color="FFFFFF", name="Arial", size=9)
-    c.alignment = Alignment(horizontal="center")
-
-    ws3.merge_cells("L5:R5")
-    c = ws3["L5"]
-    c.value = "D3: Token Efficiency"
-    c.fill = PatternFill("solid", start_color="7F6000")
     c.font = Font(bold=True, color="FFFFFF", name="Arial", size=9)
     c.alignment = Alignment(horizontal="center")
 
@@ -818,7 +818,7 @@ def build_excel(papers, stats, dupe_list):
 
     # ── Sheet 7: Exclusion Criteria ───────────────────────────────────────────
     ws4 = wb.create_sheet("Exclusion_Criteria")
-    ws4["B2"].value = "Exclusion Criteria Reference (PRISMA)"
+    ws4["B2"].value = f"Exclusion Criteria Reference (PRISMA) — {dimension_name}"
     ws4["B2"].font = Font(bold=True, size=13, color="1F4E79", name="Arial")
     ws4.column_dimensions["B"].width = 65
     ecolors = ["FFE0E0", "FFE0E0", "FFF2CC", "FFF2CC", "D5E8D4", "D5E8D4", "D6E4F0", "D6E4F0"]
@@ -834,6 +834,189 @@ def build_excel(papers, stats, dupe_list):
     buf.seek(0)
     return buf.read()
 
+# ── Word Document Template Generator ─────────────────────────────────────────
+
+def generate_word_template():
+    from docx import Document
+    from docx.shared import Inches, Pt, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    doc = Document()
+
+    # Title
+    title = doc.add_heading('Systematic Literature Review: Method & Findings', 0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    # Author info
+    doc.add_paragraph('Prepared by: [Your Name]')
+    doc.add_paragraph('Date: [Date]')
+    doc.add_paragraph('Supervisor: [Supervisor Name]')
+    doc.add_paragraph()
+
+    # 1. Introduction
+    doc.add_heading('1. Introduction', level=1)
+    doc.add_paragraph(
+        'This systematic literature review examines three dimensions related to Large Language Models (LLMs): '
+        '(1) Standardization & AI, (2) Context Engineering, and (3) Token Efficiency. '
+        'The review follows the PRISMA 2020 guidelines for transparent reporting.'
+    )
+    doc.add_paragraph('[Add your introduction text here...]')
+
+    # 2. Methodology
+    doc.add_heading('2. Methodology', level=1)
+
+    doc.add_heading('2.1 Search Strategy', level=2)
+    doc.add_paragraph('Database searches were conducted in the following databases:')
+    doc.add_paragraph('• Springer Link', style='List Bullet')
+    doc.add_paragraph('• Scopus / Elsevier', style='List Bullet')
+    doc.add_paragraph('• ACM Digital Library', style='List Bullet')
+    doc.add_paragraph('• Google Scholar (via Publish or Perish)', style='List Bullet')
+    doc.add_paragraph()
+    doc.add_paragraph('Search strings for each dimension:')
+
+    # D1 Search String
+    doc.add_heading('Dimension 1: Standardization & AI', level=3)
+    doc.add_paragraph(
+        '("data standards" OR "technical standards" OR "semantic standards" OR "standardization" OR "data standardization") '
+        'AND ("machine-readable" OR "AI-ready" OR "AI-native" OR "digital-ready") '
+        'AND ("large language models" OR LLM OR "generative AI")'
+    )
+    doc.add_paragraph(
+        '("machine-readable standards" OR "digital standards") '
+        'AND ("semantic annotation" OR metadata OR ontology) '
+        'AND (automation OR compliance OR validation)'
+    )
+
+    # D2 Search String
+    doc.add_heading('Dimension 2: Context Engineering', level=3)
+    doc.add_paragraph(
+        '("large language models" OR LLM) '
+        'AND ("context engineering" OR "context design" OR "context construction" OR "context provisioning") '
+        'AND ("structured data" OR "structured context" OR "knowledge representation")'
+    )
+    doc.add_paragraph(
+        '("large language models" OR LLM) '
+        'AND ("prompt context" OR "context window" OR "context selection") '
+        'AND ("answer quality" OR accuracy OR hallucination)'
+    )
+    doc.add_paragraph(
+        '("structured context" OR "semantic context" OR "context package") '
+        'AND ("large language models" OR LLM) '
+        'AND (efficiency OR "token efficiency" OR cost)'
+    )
+
+    # D3 Search String
+    doc.add_heading('Dimension 3: Token Efficiency', level=3)
+    doc.add_paragraph(
+        '("large language models" OR LLM) '
+        'AND ("token efficiency" OR "context compression" OR "prompt compression") '
+        'AND ("answer quality" OR accuracy OR performance)'
+    )
+    doc.add_paragraph(
+        '("large language models" OR LLM) '
+        'AND ("cost efficiency" OR "inference cost" OR "token cost") '
+        'AND ("retrieval augmented generation" OR RAG OR "context selection")'
+    )
+    doc.add_paragraph(
+        '("context compression" OR "prompt compression" OR "context pruning") '
+        'AND ("large language models" OR LLM) '
+        'AND ("question answering" OR "document QA")'
+    )
+
+    doc.add_heading('2.2 PRISMA Flow', level=2)
+    doc.add_paragraph(
+        'The PRISMA 2020 flow diagram documents the identification, screening, eligibility, '
+        'and inclusion phases for each dimension. See the attached Excel files for detailed flow trackers.'
+    )
+    doc.add_paragraph('[Insert PRISMA flow diagram or reference to Excel sheets]')
+
+    doc.add_heading('2.3 Exclusion Criteria', level=2)
+    doc.add_paragraph('Papers were excluded based on the following criteria:')
+    for crit in EXCLUSION_CRITERIA:
+        doc.add_paragraph(f'• {crit}', style='List Bullet')
+
+    doc.add_heading('2.4 Analysis Method', level=2)
+    doc.add_paragraph(
+        'The Webster & Watson (2002) concept matrix approach was used to analyze the literature. '
+        'Papers were mapped against dimension-specific concepts to identify research themes and gaps.'
+    )
+
+    # 3. Findings by Dimension
+    doc.add_heading('3. Findings', level=1)
+
+    # D1 Findings
+    doc.add_heading('3.1 Dimension 1: Standardization & AI', level=2)
+    doc.add_heading('3.1.1 Synthesis', level=3)
+    doc.add_paragraph('[Synthesize findings from included papers. Key themes to address:]')
+    doc.add_paragraph('• How do data standards enable AI-readiness?', style='List Bullet')
+    doc.add_paragraph('• What semantic annotation approaches support LLM integration?', style='List Bullet')
+    doc.add_paragraph('• How does standardization impact automation and compliance?', style='List Bullet')
+    doc.add_paragraph('[Your synthesis text here...]')
+
+    doc.add_heading('3.1.2 Summary Table', level=3)
+    table = doc.add_table(rows=1, cols=4)
+    table.style = 'Light Grid Accent 1'
+    hdr_cells = table.rows[0].cells
+    hdr_cells[0].text = 'Paper (Author, Year)'
+    hdr_cells[1].text = 'Key Contribution'
+    hdr_cells[2].text = 'Concepts Addressed'
+    hdr_cells[3].text = 'Relevance to Dimension'
+    doc.add_paragraph('[Add rows for each included paper...]')
+
+    # D2 Findings
+    doc.add_heading('3.2 Dimension 2: Context Engineering', level=2)
+    doc.add_heading('3.2.1 Synthesis', level=3)
+    doc.add_paragraph('[Synthesize findings from included papers. Key themes to address:]')
+    doc.add_paragraph('• How is context engineered for LLM performance?', style='List Bullet')
+    doc.add_paragraph('• What structured context approaches improve answer quality?', style='List Bullet')
+    doc.add_paragraph('• How do context window limitations affect design?', style='List Bullet')
+    doc.add_paragraph('[Your synthesis text here...]')
+
+    doc.add_heading('3.2.2 Summary Table', level=3)
+    table = doc.add_table(rows=1, cols=4)
+    table.style = 'Light Grid Accent 1'
+    hdr_cells = table.rows[0].cells
+    hdr_cells[0].text = 'Paper (Author, Year)'
+    hdr_cells[1].text = 'Key Contribution'
+    hdr_cells[2].text = 'Concepts Addressed'
+    hdr_cells[3].text = 'Relevance to Dimension'
+    doc.add_paragraph('[Add rows for each included paper...]')
+
+    # D3 Findings
+    doc.add_heading('3.3 Dimension 3: Token Efficiency', level=2)
+    doc.add_heading('3.3.1 Synthesis', level=3)
+    doc.add_paragraph('[Synthesize findings from included papers. Key themes to address:]')
+    doc.add_paragraph('• What token compression techniques exist?', style='List Bullet')
+    doc.add_paragraph('• How does compression affect answer quality?', style='List Bullet')
+    doc.add_paragraph('• What is the cost-performance trade-off?', style='List Bullet')
+    doc.add_paragraph('[Your synthesis text here...]')
+
+    doc.add_heading('3.3.2 Summary Table', level=3)
+    table = doc.add_table(rows=1, cols=4)
+    table.style = 'Light Grid Accent 1'
+    hdr_cells = table.rows[0].cells
+    hdr_cells[0].text = 'Paper (Author, Year)'
+    hdr_cells[1].text = 'Key Contribution'
+    hdr_cells[2].text = 'Concepts Addressed'
+    hdr_cells[3].text = 'Relevance to Dimension'
+    doc.add_paragraph('[Add rows for each included paper...]')
+
+    # 4. Discussion
+    doc.add_heading('4. Discussion', level=1)
+    doc.add_paragraph('[Discuss cross-dimensional themes, research gaps, and implications]')
+
+    # 5. Conclusion
+    doc.add_heading('5. Conclusion', level=1)
+    doc.add_paragraph('[Summarize key findings and future research directions]')
+
+    # References
+    doc.add_heading('References', level=1)
+    doc.add_paragraph('[List all included papers in APA format]')
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.read()
 
 # ── Professional UI Styling ───────────────────────────────────────────────────
 
@@ -841,25 +1024,11 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap');
 
-html, body, [class*="css"] { 
-    font-family: 'Inter', sans-serif; 
-}
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+.stApp { background: linear-gradient(135deg, #0d1117 0%, #161b22 100%); }
 
-.stApp { 
-    background: linear-gradient(135deg, #0d1117 0%, #161b22 100%); 
-}
-
-h1 {
-    font-family: 'Inter', sans-serif !important;
-    font-weight: 700 !important;
-    letter-spacing: -0.02em !important;
-}
-
-h2, h3 {
-    font-family: 'Inter', sans-serif !important;
-    font-weight: 600 !important;
-    letter-spacing: -0.01em !important;
-}
+h1 { font-family: 'Inter', sans-serif !important; font-weight: 700 !important; letter-spacing: -0.02em !important; }
+h2, h3 { font-family: 'Inter', sans-serif !important; font-weight: 600 !important; letter-spacing: -0.01em !important; }
 
 .sr-card {
     background: rgba(22, 27, 34, 0.8);
@@ -974,11 +1143,6 @@ h2, h3 {
     background: rgba(22, 27, 34, 0.8) !important;
 }
 
-[data-testid="stDataFrame"] {
-    border-radius: 8px !important;
-    border: 1px solid rgba(88, 166, 255, 0.15) !important;
-}
-
 hr {
     border: none !important;
     height: 1px !important;
@@ -1028,7 +1192,7 @@ st.markdown("""
 <div style="text-align: center; padding: 20px 0 30px 0;">
     <h1 style="font-size: 2.5rem; margin-bottom: 8px;">🔬 Systematic Review Bot</h1>
     <p style="color: #8b949e; font-size: 1.1rem; margin: 0;">
-        Upload CSV/BIB files → Parse → Fetch Abstracts → Download PRISMA Excel
+        Upload CSV/BIB files → Parse → Fetch Abstracts → Generate 3 Dimension Workbooks + Word Template
     </p>
 </div>
 """, unsafe_allow_html=True)
@@ -1119,7 +1283,7 @@ if uploaded:
     st.markdown("---")
     st.markdown("""
     <div class="sr-card">
-        <h3 style="margin-top: 0;">📈 Step 3 — Summary</h3>
+        <h3 style="margin-top: 0;">📈 Step 3 — Summary by Dimension</h3>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1155,22 +1319,21 @@ if uploaded:
 
     st.markdown(f"""
     <div class="sr-card">
-        <h3 style="margin-top: 0;">🚀 Step 4 — Generate Excel</h3>
+        <h3 style="margin-top: 0;">🚀 Step 4 — Generate Workbooks</h3>
         <p style="color: #8b949e; margin-bottom: 0;">
-            Will fetch abstracts for <b>{len(need_abstract)} papers</b> via DOI/URL (~{est_mins} min with concurrent fetching)
+            Will fetch abstracts for <b>{len(need_abstract)} papers</b> and generate 3 dimension-specific Excel files + Word template (~{est_mins} min)
         </p>
     </div>
     """, unsafe_allow_html=True)
 
     fetch_toggle = st.checkbox("Fetch abstracts automatically", value=True)
 
-    # Advanced options
     with st.expander("⚙️ Advanced Options"):
         max_workers = st.slider("Concurrent fetch workers", 1, 5, 3, 
                                 help="Higher = faster but may hit rate limits. Recommended: 3")
-        st.info("💡 Many URLs in your dataset are PDFs, blocked sites, or preprints that cannot be scraped. These will be skipped automatically.")
+        st.info("💡 Many URLs are PDFs, blocked sites, or preprints that cannot be scraped. These will be skipped automatically.")
 
-    generate_clicked = st.button("🚀 Generate Excel", type="primary", use_container_width=True)
+    generate_clicked = st.button("🚀 Generate All Workbooks", type="primary", use_container_width=True)
 
     if generate_clicked:
         progress_container = st.container()
@@ -1186,7 +1349,6 @@ if uploaded:
 
                 status_text.markdown("🔄 **Fetching abstracts...**")
 
-                # Categorize papers for better reporting
                 pdf_count = sum(1 for p in need_abstract if is_pdf_url(p.get("url", "")))
                 blocked_count = sum(1 for p in need_abstract if is_blocked_site(p.get("url", "")))
                 scopus_count = sum(1 for p in need_abstract if is_scopus_inward(p.get("url", "")))
@@ -1242,13 +1404,26 @@ if uploaded:
                 status_text.markdown(f"✅ **Done!** Fetched {found}/{total} abstracts in {total_sec}s ({skipped} auto-skipped)")
                 detail_text.empty()
 
-            # Build Excel
-            status_text.markdown("📊 **Building Excel workbook...**")
-            excel_bytes = build_excel(unique, stats, dupe_list)
+            # Build 3 dimension Excel files
+            status_text.markdown("📊 **Building dimension workbooks...**")
 
-            # Store in session state
-            st.session_state["excel_bytes"] = excel_bytes
-            st.session_state["excel_fname"] = f"systematic_review_{datetime.now():%Y%m%d_%H%M}.xlsx"
+            dim_files = {}
+            for dim_code, dim_name in DIMENSION_NAMES.items():
+                excel_bytes = build_dimension_excel(unique, stats, dupe_list, dim_name, dim_code)
+                if excel_bytes:
+                    dim_files[dim_code] = excel_bytes
+                    st.session_state[f"excel_{dim_code}"] = excel_bytes
+                    st.session_state[f"fname_{dim_code}"] = f"{dim_name}_{datetime.now():%Y%m%d_%H%M}.xlsx"
+
+            # Build Word template
+            status_text.markdown("📝 **Generating Word template...**")
+            try:
+                word_bytes = generate_word_template()
+                st.session_state["word_template"] = word_bytes
+                st.session_state["word_fname"] = f"SR_Method_and_Findings_{datetime.now():%Y%m%d_%H%M}.docx"
+            except Exception as e:
+                st.warning(f"Word template generation failed: {e}. Install python-docx: pip install python-docx")
+
             st.session_state["excel_ready"] = True
             st.session_state["abstracts_filled"] = sum(1 for p in unique if p.get("abstract", "").strip() and not p.get("abstract", "").startswith('['))
             st.session_state["total_papers"] = stats["after_dedup"]
@@ -1266,32 +1441,36 @@ if uploaded:
         </div>
         """, unsafe_allow_html=True)
 
-        sheets = {
-            "PRISMA_Flow": "PRISMA 2020 tracker",
-            "Screening_Sheet": f"{st.session_state.get('total_papers', 0)} papers",
-            "Duplicates_Removed": f"{st.session_state.get('dupe_count', 0)} duplicates",
-            "Missing_Year": f"{len(missing_year_pre)} — check year",
-            "Missing_DOI": f"{len(missing_doi_pre)} — add DOI",
-            "Concept_Matrix_W&W": "Webster & Watson matrix",
-            "Exclusion_Criteria": "E1-E8 reference",
-        }
-        colors = {"Duplicates_Removed": "#E8EAF6", "Missing_Year": "#FFF8E8", "Missing_DOI": "#FFE8E8"}
+        # Dimension Excel files
+        st.markdown("#### 📊 Dimension Workbooks")
+        for dim_code in ["D1", "D2", "D3"]:
+            if f"excel_{dim_code}" in st.session_state:
+                dim_name = DIMENSION_NAMES[dim_code]
+                st.markdown(f'<div class="sheet-card"><b>{dim_name}</b> — PRISMA Flow + Screening + Concept Matrix</div>', unsafe_allow_html=True)
+                st.download_button(
+                    f"📥 Download {dim_name}",
+                    data=st.session_state[f"excel_{dim_code}"],
+                    file_name=st.session_state[f"fname_{dim_code}"],
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"dl_{dim_code}"
+                )
 
-        for sheet, desc in sheets.items():
-            color = colors.get(sheet, "#f0f7ff")
-            st.markdown(f'<div class="sheet-card" style="background: {color}10; border-color: {color}40;"><b>{sheet}</b> — {desc}</div>', unsafe_allow_html=True)
-
-        st.markdown("")
-        st.download_button("📥 Download PRISMA Excel",
-            data=st.session_state["excel_bytes"],
-            file_name=st.session_state["excel_fname"],
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True, type="primary")
+        # Word template
+        if "word_template" in st.session_state:
+            st.markdown("#### 📝 Word Template")
+            st.markdown(f'<div class="sheet-card"><b>Method & Findings Template</b> — Structured document with all 3 dimensions</div>', unsafe_allow_html=True)
+            st.download_button(
+                "📥 Download Word Template",
+                data=st.session_state["word_template"],
+                file_name=st.session_state["word_fname"],
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                key="dl_word"
+            )
 
         n = st.session_state.get("total_papers", 0)
         a = st.session_state.get("abstracts_filled", 0)
         d = st.session_state.get("dupe_count", 0)
-        st.success(f"✅ {n} papers · {a} with abstract · {d} dupes removed")
+        st.success(f"✅ {n} total papers · {a} with abstract · {d} dupes removed")
 
 else:
     st.markdown("---")
@@ -1302,9 +1481,9 @@ else:
     """, unsafe_allow_html=True)
 
     st.dataframe(pd.DataFrame({
-        "File":   ["springer_d1q1.csv", "springer_d1q2.csv", "acm_d1q1.bib", "acm_d1q2.bib", "scopus_d1q1.csv", "scholar_d1q1.csv"],
+        "File":   ["springer_d1q1.csv", "springer_d1q2.csv", "acm_d1q1.bib", "acm_d1q2.bib", "scopus_d2q1.csv", "scholar_d3q1.csv"],
         "DB":     ["Springer", "Springer", "ACM", "ACM", "Elsevier/Scopus", "Google Scholar"],
-        "Query":  ["D1Q1", "D1Q2", "D1Q1", "D1Q2", "D1Q1", "D1Q1"],
+        "Query":  ["D1Q1", "D1Q2", "D1Q1", "D1Q2", "D2Q1", "D3Q1"],
         "Format": ["CSV", "CSV", "BibTeX", "BibTeX", "CSV", "CSV"],
     }), use_container_width=True, hide_index=True)
 
