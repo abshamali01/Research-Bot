@@ -1,301 +1,199 @@
 """
-Systematic Review Bot — Streamlit Web App
-==========================================
-Deploy free on Streamlit Cloud (share.streamlit.io)
+Systematic Review — File Importer
+Upload CSV (Springer/Scopus/Scholar) + BIB (ACM) files
+→ Get PRISMA Excel output
 """
 
 import streamlit as st
-import os, json, time, urllib.parse, io
+import pandas as pd
+import io, re, csv
 from datetime import datetime
 
-st.set_page_config(
-    page_title="Systematic Review Bot",
-    page_icon="🔬",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="SR Importer", page_icon="📥", layout="wide")
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;600&display=swap');
-html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
-h1, h2, h3 { font-family: 'IBM Plex Mono', monospace; }
-.stApp { background: #0d1117; color: #e6edf3; }
-.metric-card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 16px; text-align: center; }
-.metric-card .num { font-family: 'IBM Plex Mono'; font-size: 2rem; color: #58a6ff; font-weight: 600; }
-.metric-card .lbl { font-size: 0.75rem; color: #8b949e; text-transform: uppercase; letter-spacing: 1px; }
-.dim-badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.72rem; font-family: 'IBM Plex Mono'; font-weight: 600; }
-.dim-d1 { background: #1c2d4f; color: #79c0ff; border: 1px solid #2d5a9e; }
-.dim-d2 { background: #1a2e1a; color: #7ee787; border: 1px solid #2d5e2d; }
-.dim-d3 { background: #2e2a14; color: #e3b341; border: 1px solid #5e4e14; }
-.section-header { border-left: 3px solid #58a6ff; padding-left: 12px; font-family: 'IBM Plex Mono'; color: #e6edf3; }
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Fraunces:wght@300;600&display=swap');
+*, html, body { box-sizing: border-box; }
+[class*="css"], .stApp { font-family: 'Fraunces', serif; background: #f7f4ef; color: #1a1a2e; }
+h1,h2,h3 { font-family: 'JetBrains Mono', monospace; }
+.stApp { background: #f7f4ef; }
+
+.upload-zone {
+    border: 2px dashed #c8b99a; border-radius: 8px;
+    padding: 20px; margin: 8px 0; background: #fff;
+    transition: border-color 0.2s;
+}
+.tag {
+    display: inline-block; padding: 3px 10px; border-radius: 4px;
+    font-family: 'JetBrains Mono'; font-size: 0.72rem; font-weight: 700;
+    margin: 2px;
+}
+.tag-springer { background: #e8f4d4; color: #2d6a2d; border: 1px solid #2d6a2d; }
+.tag-acm      { background: #fde8e8; color: #8b1a1a; border: 1px solid #8b1a1a; }
+.tag-scopus   { background: #e8eef8; color: #1a3a8b; border: 1px solid #1a3a8b; }
+.tag-scholar  { background: #fef8e8; color: #7a5a00; border: 1px solid #7a5a00; }
+.tag-d1 { background: #dbeafe; color: #1e40af; }
+.tag-d2 { background: #dcfce7; color: #166534; }
+.tag-d3 { background: #fef9c3; color: #854d0e; }
+
+.stat-box {
+    background: #fff; border: 1px solid #e0d8cc; border-radius: 6px;
+    padding: 14px; text-align: center;
+}
+.stat-num { font-family: 'JetBrains Mono'; font-size: 1.8rem; color: #1a1a2e; font-weight: 700; }
+.stat-lbl { font-size: 0.75rem; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+
+section[data-testid="stFileUploadDropzone"] {
+    background: #fff !important; border: 2px dashed #c8b99a !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
-with st.sidebar:
-    st.markdown("## 🔬 Systematic Review Bot")
-    st.markdown("---")
-    st.markdown("### API Keys")
-    springer_oa   = st.text_input("Springer Open Access Key", type="password",
-                                   value="547069e6b9af47166cfa75f20d815009")
-    elsevier_key  = st.text_input("Elsevier / Scopus API Key", type="password",
-                                   value="76e7e8b25be92da632764cabd04e2a64")
-    st.markdown("---")
-    st.markdown("### Search Parameters")
-    year_start = st.number_input("Year From", min_value=2000, max_value=2026, value=2015)
-    year_end   = st.number_input("Year To",   min_value=2000, max_value=2026, value=2026)
-    # Slider removed — fetch ALL results from each DB
-    st.markdown("---")
-    st.markdown("### Databases")
-    use_springer = st.checkbox("Springer",            value=True)
-    use_elsevier = st.checkbox("Elsevier/Scopus",     value=True)
-    use_acm      = st.checkbox("ACM Digital Library", value=True)
-    use_scholar  = st.checkbox("Google Scholar",      value=True)
-    st.markdown("---")
-    st.markdown("### Dimensions")
-    use_d1 = st.checkbox("D1 — Standardization & AI", value=True)
-    use_d2 = st.checkbox("D2 — Context Engineering",  value=True)
-    use_d3 = st.checkbox("D3 — Token Efficiency",     value=True)
-    st.markdown("---")
-    st.caption("PRISMA 2020 | Webster & Watson")
-    st.caption("Uni Koblenz — HiWi Project")
-
-ALL_SEARCH_STRINGS = {
-    "D1_Standardization_AI": [
-        {"id":"D1Q1","label":"Standards + AI-readiness + LLM",
-         "generic":'("data standards" OR "technical standards" OR "semantic standards" OR "standardization") AND ("machine-readable" OR "AI-ready" OR "AI-native" OR "digital-ready") AND ("large language models" OR "LLM" OR "generative AI")',
-         "springer":'("data standards" OR "technical standards") AND ("machine-readable" OR "AI-ready") AND ("large language models" OR "generative AI")',
-         "elsevier":'TITLE-ABS-KEY(("data standards" OR "technical standards") AND ("machine-readable" OR "AI-ready") AND ("large language models" OR "LLM"))',
-         "acm":'"data standards" AND "machine-readable" AND ("large language models" OR "LLM")',},
-        {"id":"D1Q2","label":"Digital standards + Ontology + Automation",
-         "generic":'("machine-readable standards" OR "digital standards") AND ("semantic annotation" OR "metadata" OR "ontology") AND ("automation" OR "compliance" OR "validation")',
-         "springer":'("machine-readable standards" OR "digital standards") AND ("ontology" OR "semantic annotation") AND ("automation" OR "compliance")',
-         "elsevier":'TITLE-ABS-KEY(("machine-readable standards" OR "digital standards") AND ("semantic annotation" OR "ontology") AND ("automation" OR "compliance"))',
-         "acm":'"machine-readable standards" AND (ontology OR "semantic annotation") AND (automation OR compliance)',},
-    ],
-    "D2_Context_Engineering": [
-        {"id":"D2Q1","label":"LLM + Context Engineering + Structured Data",
-         "generic":'("large language models" OR "LLM") AND ("context engineering" OR "context design" OR "context construction" OR "context provisioning") AND ("structured data" OR "knowledge representation")',
-         "springer":'("large language models" OR LLM) AND ("context engineering" OR "context provisioning") AND ("structured data" OR "knowledge representation")',
-         "elsevier":'TITLE-ABS-KEY(("large language models" OR "LLM") AND ("context engineering" OR "context design" OR "context provisioning") AND ("structured data" OR "knowledge representation"))',
-         "acm":'("large language models" OR LLM) AND ("context engineering" OR "context provisioning")',},
-        {"id":"D2Q2","label":"LLM + Context Window + Hallucination",
-         "generic":'("large language models" OR "LLM") AND ("prompt context" OR "context window" OR "context selection") AND ("answer quality" OR "accuracy" OR "hallucination")',
-         "springer":'("large language models" OR LLM) AND ("context window" OR "context selection") AND ("hallucination" OR "accuracy")',
-         "elsevier":'TITLE-ABS-KEY(("large language models" OR "LLM") AND ("context window" OR "context selection") AND ("accuracy" OR "hallucination"))',
-         "acm":'("large language models" OR LLM) AND ("context window" OR "context selection") AND (hallucination OR accuracy)',},
-        {"id":"D2Q3","label":"Semantic Context + LLM + Efficiency",
-         "generic":'("structured context" OR "semantic context" OR "context package") AND ("large language models" OR "LLM") AND ("efficiency" OR "token efficiency" OR "cost")',
-         "springer":'("structured context" OR "semantic context") AND ("large language models" OR LLM) AND (efficiency OR cost)',
-         "elsevier":'TITLE-ABS-KEY(("structured context" OR "semantic context") AND ("large language models" OR "LLM") AND ("token efficiency" OR "efficiency"))',
-         "acm":'("structured context" OR "semantic context") AND ("large language models" OR LLM) AND (efficiency OR cost)',},
-    ],
-    "D3_Token_Efficiency": [
-        {"id":"D3Q1","label":"LLM + Token/Context Compression + Performance",
-         "generic":'("large language models" OR "LLM") AND ("token efficiency" OR "context compression" OR "prompt compression") AND ("answer quality" OR "accuracy" OR "performance")',
-         "springer":'("large language models" OR LLM) AND ("token efficiency" OR "context compression" OR "prompt compression") AND (accuracy OR performance)',
-         "elsevier":'TITLE-ABS-KEY(("large language models" OR "LLM") AND ("token efficiency" OR "context compression" OR "prompt compression") AND ("accuracy" OR "performance"))',
-         "acm":'("large language models" OR LLM) AND ("token efficiency" OR "context compression" OR "prompt compression")',},
-        {"id":"D3Q2","label":"LLM + Cost Efficiency + RAG",
-         "generic":'("large language models" OR "LLM") AND ("cost efficiency" OR "inference cost" OR "token cost") AND ("retrieval augmented generation" OR "RAG" OR "context selection")',
-         "springer":'("large language models" OR LLM) AND ("inference cost" OR "token cost") AND ("retrieval augmented generation" OR RAG)',
-         "elsevier":'TITLE-ABS-KEY(("large language models" OR "LLM") AND ("inference cost" OR "cost efficiency") AND ("retrieval augmented generation" OR "RAG"))',
-         "acm":'("large language models" OR LLM) AND ("inference cost" OR "token cost") AND (RAG OR "retrieval augmented generation")',},
-        {"id":"D3Q3","label":"Context Pruning + LLM + QA",
-         "generic":'("context compression" OR "prompt compression" OR "context pruning") AND ("large language models" OR "LLM") AND ("question answering" OR "document QA")',
-         "springer":'("context compression" OR "prompt compression" OR "context pruning") AND ("large language models" OR LLM) AND ("question answering")',
-         "elsevier":'TITLE-ABS-KEY(("context compression" OR "prompt compression" OR "context pruning") AND ("large language models" OR "LLM") AND ("question answering" OR "document QA"))',
-         "acm":'("context compression" OR "prompt compression" OR "context pruning") AND ("large language models" OR LLM)',},
-    ],
+# ─── Query map ────────────────────────────────────────────────────────────────
+QUERY_MAP = {
+    "D1Q1": "D1_Standardization_AI",
+    "D1Q2": "D1_Standardization_AI",
+    "D2Q1": "D2_Context_Engineering",
+    "D2Q2": "D2_Context_Engineering",
+    "D2Q3": "D2_Context_Engineering",
+    "D3Q1": "D3_Token_Efficiency",
+    "D3Q2": "D3_Token_Efficiency",
+    "D3Q3": "D3_Token_Efficiency",
 }
 
 EXCLUSION_CRITERIA = [
-    "E1: Outside year range", "E2: Not English",
-    "E3: Not journal/conference paper", "E4: Not relevant to dimension",
-    "E5: Duplicate", "E6: Full text not accessible",
-    "E7: Abstract only / insufficient detail", "E8: Not peer-reviewed",
+    "E1: Outside year range (2015–2026)",
+    "E2: Not English",
+    "E3: Not journal/conference/review paper",
+    "E4: Not relevant to dimension topic",
+    "E5: Duplicate",
+    "E6: Full text not accessible",
+    "E7: Abstract only / insufficient detail",
+    "E8: Not peer-reviewed",
 ]
 
-# ── FIX 1: Springer — use OA key + openaccess endpoint ──────────────────────
-def search_springer(query, api_key, year_start, year_end):
-    import requests
-    results, start = [], 1
-    while True:
-        params = {
-            "api_key": api_key,
-            "q": query, "s": start, "p": 25,
-            "dateFrom": f"{year_start}-01-01",
-            "dateTo":   f"{year_end}-12-31",
-        }
-        try:
-            # FIXED: was /meta/v2/json — now /openaccess/json
-            r = requests.get("https://api.springernature.com/openaccess/json",
-                             params=params, timeout=20)
-            r.raise_for_status()
-            data = r.json()
-            records = data.get("records", [])
-            if not records: break
-            for rec in records:
-                ctype = rec.get("contentType","").lower()
-                if not any(t in ctype for t in ["article","chapter","conference"]): continue
-                results.append({
-                    "title":    rec.get("title",""),
-                    "authors":  "; ".join(a.get("creator","") for a in rec.get("creators",[])),
-                    "year":     rec.get("publicationDate","")[:4],
-                    "source":   rec.get("publicationName",""),
-                    "doi":      rec.get("doi",""),
-                    "abstract": rec.get("abstract",""),
-                    "url":      (rec.get("url",[{}])[0].get("value","") if rec.get("url") else ""),
-                    "type":     rec.get("contentType",""), "database": "Springer",
-                })
-            total = int(data.get("result",[{}])[0].get("total",0))
-            if start + 25 > total: break
-            start += 25; time.sleep(0.5)
-        except Exception as e:
-            return results, str(e)
-    return results, None
+# ─── Parsers ──────────────────────────────────────────────────────────────────
 
-
-# ── FIX 2: Elsevier — JSON via Accept header + apiKey param ─────────────────
-def search_elsevier(query, api_key, year_start, year_end):
-    import requests
-    results, start = [], 0
-    date_q = f"({query}) AND (PUBYEAR > {year_start-1} AND PUBYEAR < {year_end+1})"
-    # FIXED: send apiKey as query param AND Accept: application/json header
-    headers = {
-        "Accept": "application/json",
-        "X-ELS-APIKey": api_key,
-    }
-    while True:
-        params = {
-            "apiKey": api_key,          # FIXED: was inside headers only
-            "query":  date_q,
-            "start":  start,
-            "count":  25,
-            "sort":   "relevancy",
-            "field":  "dc:title,dc:creator,prism:coverDate,prism:publicationName,prism:doi,dc:description,prism:url,subtypeDescription",
-        }
-        try:
-            r = requests.get("https://api.elsevier.com/content/search/scopus",
-                             headers=headers, params=params, timeout=20)
-            r.raise_for_status()
-            data = r.json()
-            entries = data.get("search-results",{}).get("entry",[])
-            if not entries or entries[0].get("error"): break
-            for e in entries:
-                stype = e.get("subtypeDescription","").lower()
-                if stype not in ["article","conference paper","review","conference review"]: continue
-                results.append({
-                    "title":    e.get("dc:title",""),
-                    "authors":  e.get("dc:creator",""),
-                    "year":     e.get("prism:coverDate","")[:4],
-                    "source":   e.get("prism:publicationName",""),
-                    "doi":      e.get("prism:doi",""),
-                    "abstract": e.get("dc:description",""),
-                    "url":      e.get("prism:url",""),
-                    "type":     e.get("subtypeDescription",""),
-                    "database": "Elsevier/Scopus",
-                })
-            total = int(data.get("search-results",{}).get("opensearch:totalResults",0))
-            if start + 25 >= total: break
-            start += 25; time.sleep(0.5)
-        except Exception as e:
-            return results, str(e)
-    return results, None
-
-
-def search_acm(query, year_start, year_end):
-    import requests
-    from bs4 import BeautifulSoup
-    results, page = [], 0
-    encoded = urllib.parse.quote(query)
-    HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; AcademicResearch/1.0)"}
-    while True:
-        url = (f"https://dl.acm.org/action/doSearch?query={encoded}"
-               f"&startPage={page}&pageSize=20"
-               f"&AfterYear={year_start}&BeforeYear={year_end}"
-               f"&ContentItemType=research-article&ContentItemType=proceeding")
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=25)
-            r.raise_for_status()
-            soup = BeautifulSoup(r.text, "html.parser")
-            items = soup.select("li.search__item")
-            if not items: break
-            for item in items:
-                title_el = item.select_one("h5.issue-item__title a")
-                if not title_el: continue
-                href = title_el.get("href","")
-                doi = href.split("/doi/")[-1] if "/doi/" in href else ""
-                authors = "; ".join(a.get_text(strip=True) for a in item.select("ul.rlist--inline.loa li a span"))
-                year = ""
-                detail = item.select_one("div.issue-item__detail")
-                if detail:
-                    for txt in detail.stripped_strings:
-                        if txt.strip().isdigit() and len(txt.strip())==4:
-                            year = txt.strip(); break
-                source_el   = item.select_one("span.epub-section__title")
-                abstract_el = item.select_one("div.issue-item__abstract p")
-                results.append({
-                    "title":    title_el.get_text(strip=True), "authors": authors, "year": year,
-                    "source":   source_el.get_text(strip=True) if source_el else "",
-                    "doi": doi, "abstract": abstract_el.get_text(strip=True) if abstract_el else "",
-                    "url": f"https://dl.acm.org{href}" if href else "",
-                    "type": "Article/Conference", "database": "ACM",
-                })
-            page += 1
-            if len(items) < 20: break
-            time.sleep(2)
-        except Exception as e:
-            return results, str(e)
-    return results, None
-
-
-def search_scholar(query, year_start, year_end):
-    from scholarly import scholarly
-    results = []
+def parse_springer_csv(content: str, query_id: str) -> list[dict]:
+    papers = []
     try:
-        gen = scholarly.search_pubs(query)
-        count = 0
-        while count < 20:  # Scholar bot limit
-            try:
-                pub = next(gen)
-                bib = pub.get("bib",{})
-                year_str = str(bib.get("pub_year",""))
-                if year_str.isdigit() and not (year_start <= int(year_str) <= year_end):
-                    count += 1; continue
-                results.append({
-                    "title":    bib.get("title",""),
-                    "authors":  "; ".join(bib.get("author",[])) if isinstance(bib.get("author"),list) else bib.get("author",""),
-                    "year":     year_str,
-                    "source":   bib.get("journal","") or bib.get("booktitle",""),
-                    "doi":      pub.get("externalids",{}).get("DOI",""),
-                    "abstract": bib.get("abstract",""),
-                    "url":      pub.get("pub_url",""),
-                    "type":     bib.get("ENTRYTYPE",""), "database": "Google Scholar",
-                })
-                count += 1; time.sleep(1.5)
-            except StopIteration: break
-            except: count += 1; time.sleep(3)
+        reader = csv.DictReader(io.StringIO(content))
+        for row in reader:
+            papers.append({
+                "title":    row.get("Item Title","").strip(),
+                "authors":  row.get("Authors","").strip(),
+                "year":     str(row.get("Publication Year","")).strip(),
+                "source":   (row.get("Publication Title","") or row.get("Book Series Title","")).strip(),
+                "doi":      row.get("Item DOI","").strip(),
+                "abstract": "",
+                "url":      row.get("URL","").strip(),
+                "type":     row.get("Content Type","").strip(),
+                "database": "Springer",
+                "query_id": query_id,
+                "dimension": QUERY_MAP.get(query_id,""),
+            })
     except Exception as e:
-        return results, str(e)
-    return results, None
+        st.warning(f"Springer CSV parse error: {e}")
+    return papers
 
 
-def deduplicate(papers):
+def parse_scopus_csv(content: str, query_id: str) -> list[dict]:
+    papers = []
+    try:
+        reader = csv.DictReader(io.StringIO(content))
+        for row in reader:
+            papers.append({
+                "title":    row.get("Title","").strip(),
+                "authors":  row.get("Authors","").strip(),
+                "year":     str(row.get("Year","")).strip(),
+                "source":   row.get("Source title","").strip(),
+                "doi":      row.get("DOI","").strip(),
+                "abstract": row.get("Abstract","").strip(),
+                "url":      row.get("Link","").strip(),
+                "type":     row.get("Document Type","").strip(),
+                "database": "Elsevier/Scopus",
+                "query_id": query_id,
+                "dimension": QUERY_MAP.get(query_id,""),
+            })
+    except Exception as e:
+        st.warning(f"Scopus CSV parse error: {e}")
+    return papers
+
+
+def parse_scholar_csv(content: str, query_id: str) -> list[dict]:
+    papers = []
+    try:
+        reader = csv.DictReader(io.StringIO(content))
+        for row in reader:
+            papers.append({
+                "title":    row.get("Title","").strip(),
+                "authors":  row.get("Authors","").strip(),
+                "year":     str(row.get("Year","")).strip(),
+                "source":   row.get("Publication","").strip(),
+                "doi":      row.get("DOI","").strip(),
+                "abstract": row.get("Abstract","").strip(),
+                "url":      row.get("URL","").strip(),
+                "type":     row.get("Type","article").strip(),
+                "database": "Google Scholar",
+                "query_id": query_id,
+                "dimension": QUERY_MAP.get(query_id,""),
+            })
+    except Exception as e:
+        st.warning(f"Scholar CSV parse error: {e}")
+    return papers
+
+
+def parse_bib(content: str, query_id: str) -> list[dict]:
+    papers = []
+    entries = re.split(r'\n@', content)
+    for entry in entries:
+        if not entry.strip(): continue
+        if not entry.startswith('@'): entry = '@' + entry
+
+        def get_field(field, text):
+            m = re.search(rf'{field}\s*=\s*[{{"](.+?)[}}"]\s*[,}}]', text, re.IGNORECASE|re.DOTALL)
+            return m.group(1).strip().replace('\n',' ') if m else ""
+
+        papers.append({
+            "title":    get_field("title", entry),
+            "authors":  get_field("author", entry),
+            "year":     get_field("year", entry),
+            "source":   get_field("booktitle", entry) or get_field("journal", entry),
+            "doi":      get_field("doi", entry),
+            "abstract": get_field("abstract", entry)[:300],
+            "url":      get_field("url", entry),
+            "type":     "Conference Paper" if "inproceedings" in entry[:30].lower() else "Article",
+            "database": "ACM",
+            "query_id": query_id,
+            "dimension": QUERY_MAP.get(query_id,""),
+        })
+    return [p for p in papers if p["title"]]
+
+
+def detect_csv_type(content: str) -> str:
+    first_line = content.split('\n')[0].lower()
+    if "item title" in first_line:      return "springer"
+    if "source title" in first_line:    return "scopus"
+    if "publication" in first_line:     return "scholar"
+    return "unknown"
+
+
+def deduplicate(papers: list[dict]) -> tuple[list[dict], int]:
     seen_doi, seen_title, unique, dupes = set(), set(), [], 0
     for p in papers:
         doi   = p.get("doi","").strip().lower()
         title = p.get("title","").strip().lower()[:80]
         key   = doi if doi else title
-        if key and key in seen_doi:        dupes += 1; continue
-        if key:                             seen_doi.add(key)
-        if title and title in seen_title:   dupes += 1; continue
-        if title:                           seen_title.add(title)
+        if key and key in seen_doi:       dupes += 1; continue
+        if key:                            seen_doi.add(key)
+        if title and title in seen_title:  dupes += 1; continue
+        if title:                          seen_title.add(title)
         unique.append(p)
     return unique, dupes
 
 
-def build_excel_bytes(papers, stats):
+def build_excel(papers: list[dict], stats: dict) -> bytes:
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
@@ -309,6 +207,7 @@ def build_excel_bytes(papers, stats):
 
     wb = openpyxl.Workbook()
 
+    # ── PRISMA Flow ────────────────────────────────────────────────────────────
     ws = wb.active; ws.title = "PRISMA_Flow"
     ws.sheet_view.showGridLines = False
     ws.column_dimensions["A"].width = 3
@@ -323,6 +222,7 @@ def build_excel_bytes(papers, stats):
         c.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True)
         ws.column_dimensions[get_column_letter(ci)].width=w
     ws.row_dimensions[4].height=28
+
     rows=[]
     for db,qc in stats.get("identification",{}).items():
         for qid,n in qc.items():
@@ -345,10 +245,11 @@ def build_excel_bytes(papers, stats):
             c.font=Font(name="Arial",size=9)
             c.alignment=Alignment(wrap_text=True,vertical="center")
 
+    # ── Screening Sheet ────────────────────────────────────────────────────────
     ws2=wb.create_sheet("Screening_Sheet"); ws2.freeze_panes="A2"
     COLS=[
-        ("ID",6),("Dimension",14),("Query ID",8),("Database",12),("Title",40),
-        ("Authors",22),("Year",6),("Source / Journal",22),("DOI",25),("URL",25),
+        ("ID",6),("Dimension",18),("Query ID",8),("Database",14),("Title",42),
+        ("Authors",22),("Year",6),("Source / Journal",24),("DOI",26),("URL",26),
         ("Abstract (snippet)",45),("Title Screen\nY/N",10),("Title Screen\nReason",22),
         ("Abstract Screen\nY/N",10),("Abstract Screen\nReason",22),
         ("Full Text\nRetrieved?",10),("Eligible?\nY/N",10),
@@ -360,6 +261,7 @@ def build_excel_bytes(papers, stats):
         c.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True)
         ws2.column_dimensions[get_column_letter(ci)].width=width
     ws2.row_dimensions[1].height=36
+
     for ri,p in enumerate(papers,2):
         dk=p.get("dimension","")[:2]
         fill=PatternFill("solid",start_color=DIM_CLR.get(dk,"FFFFFF"))
@@ -375,18 +277,17 @@ def build_excel_bytes(papers, stats):
             c.alignment=Alignment(wrap_text=True,vertical="top")
     ws2.auto_filter.ref=f"A1:{get_column_letter(len(COLS))}{len(papers)+1}"
 
+    # ── Concept Matrix ────────────────────────────────────────────────────────
     ws3=wb.create_sheet("Concept_Matrix_W&W")
     ws3.column_dimensions["A"].width=3;ws3.column_dimensions["B"].width=4
     ws3["C2"].value="Webster & Watson (2002) Concept Matrix"
     ws3["C2"].font=Font(bold=True,size=14,color="1F4E79",name="Arial")
     ws3.merge_cells("C2:T2")
-    ws3["C3"].value="✓ = concept addressed by paper. Add included papers as rows."
+    ws3["C3"].value="✓ = concept addressed. Add included papers as rows after screening."
     ws3["C3"].font=Font(italic=True,size=9,color="595959")
-    concepts=[
-        "Data\nStandards","AI-\nReadiness","Machine-\nReadable","Semantic\nAnnotation",
-        "Context\nEngineering","Context\nWindow","Prompt\nDesign","Structured\nContext","Knowledge\nRepresent.",
-        "Token\nEfficiency","Context\nCompression","Prompt\nCompression","RAG","Inference\nCost","Answer\nQuality","Hallucin-\nation",
-    ]
+    concepts=["Data\nStandards","AI-\nReadiness","Machine-\nReadable","Semantic\nAnnotation",
+              "Context\nEngineering","Context\nWindow","Prompt\nDesign","Structured\nContext","Knowledge\nRepresent.",
+              "Token\nEfficiency","Context\nCompression","Prompt\nCompression","RAG","Inference\nCost","Answer\nQuality","Hallucin-\nation"]
     cfills=(["D6E4F0"]*4)+["D5E8D4"]*5+["FFF2CC"]*7
     ws3.merge_cells("C5:F5");c=ws3["C5"]
     c.value="D1: Standardization & AI";c.fill=PatternFill("solid",start_color="1F4E79")
@@ -409,7 +310,7 @@ def build_excel_bytes(papers, stats):
         c.alignment=Alignment(text_rotation=90,horizontal="center",vertical="bottom",wrap_text=True)
         c.border=BDR;ws3.column_dimensions[get_column_letter(ci)].width=5
     ws3.row_dimensions[6].height=80
-    for ri in range(7,32):
+    for ri in range(7,52):
         alt=PatternFill("solid",start_color="F8F8F8") if ri%2==0 else PatternFill()
         for ci in range(3,5+len(concepts)):
             c=ws3.cell(row=ri,column=ci,value="")
@@ -418,6 +319,7 @@ def build_excel_bytes(papers, stats):
             c.alignment=Alignment(horizontal="center",vertical="center")
         ws3.row_dimensions[ri].height=18
 
+    # ── Exclusion Criteria ────────────────────────────────────────────────────
     ws4=wb.create_sheet("Exclusion_Criteria")
     ws4["B2"].value="Exclusion Criteria Reference"
     ws4["B2"].font=Font(bold=True,size=13,color="1F4E79",name="Arial")
@@ -429,207 +331,128 @@ def build_excel_bytes(papers, stats):
         c.fill=PatternFill("solid",start_color=ecolors[ri-4])
         c.border=BDR;ws4.row_dimensions[ri].height=22
 
-    ws5=wb.create_sheet("Search_Log")
-    ws5["B2"].value="Search Query Log — All Queries × All Databases"
-    ws5["B2"].font=Font(bold=True,size=13,color="1F4E79",name="Arial")
-    lhdrs=["Dimension","Query ID","Label","Database","Query String","n Retrieved"]
-    lwids=[24,8,30,16,60,12]
-    for ci,(h,w) in enumerate(zip(lhdrs,lwids),2):
-        c=ws5.cell(row=4,column=ci,value=h)
-        c.font=H_FONT;c.fill=H_FILL;c.border=BDR
-        c.alignment=Alignment(horizontal="center")
-        ws5.column_dimensions[get_column_letter(ci)].width=w
-    lri=5
-    for dim,queries in ALL_SEARCH_STRINGS.items():
-        for q in queries:
-            for db_name,db_key in [("Springer","springer"),("Elsevier","elsevier"),("ACM","acm"),("Google Scholar","generic")]:
-                row=[dim,q["id"],q["label"],db_name,q[db_key],
-                     stats.get("identification",{}).get(db_name,{}).get(q["id"],"")]
-                fill=PatternFill("solid",start_color=DIM_CLR.get(dim[:2],"FFFFFF"))
-                for ci,val in enumerate(row,2):
-                    c=ws5.cell(row=lri,column=ci,value=val)
-                    c.fill=fill;c.border=BDR
-                    c.font=Font(name="Arial",size=9)
-                    c.alignment=Alignment(wrap_text=True,vertical="top")
-                ws5.row_dimensions[lri].height=28;lri+=1
-
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     return buf.read()
 
 
-# ─── Main UI ──────────────────────────────────────────────────────────────────
+# ─── UI ───────────────────────────────────────────────────────────────────────
 
-st.markdown("# 🔬 Systematic Review Bot")
-st.markdown("**PRISMA 2020** · **Webster & Watson** · 4 Databases · 9 Search Strings")
+st.markdown("# 📥 Systematic Review — File Importer")
+st.markdown("Upload your exported files → get PRISMA Excel automatically")
 st.markdown("---")
 
-active_strings = {}
-dim_map = {"D1_Standardization_AI": use_d1, "D2_Context_Engineering": use_d2, "D3_Token_Efficiency": use_d3}
-for dim, enabled in dim_map.items():
-    if enabled:
-        active_strings[dim] = ALL_SEARCH_STRINGS[dim]
+st.markdown("### Step 1 — Upload Files")
+st.markdown("Name files like `springer_d1q1.csv`, `acm_d1q2.bib`, `scopus_d2q1.csv`, `scholar_d3q1.csv`")
+st.caption("Supported: Springer CSV, Scopus CSV, Google Scholar CSV (from Publish or Perish), ACM BibTeX (.bib)")
 
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.markdown('<div class="metric-card"><div class="num">{}</div><div class="lbl">Dimensions</div></div>'.format(len(active_strings)), unsafe_allow_html=True)
-with col2:
-    total_queries = sum(len(v) for v in active_strings.values())
-    st.markdown('<div class="metric-card"><div class="num">{}</div><div class="lbl">Search Queries</div></div>'.format(total_queries), unsafe_allow_html=True)
-with col3:
-    dbs = sum([use_springer, use_elsevier, use_acm, use_scholar])
-    st.markdown('<div class="metric-card"><div class="num">{}</div><div class="lbl">Databases</div></div>'.format(dbs), unsafe_allow_html=True)
+uploaded = st.file_uploader(
+    "Drop all files here",
+    type=["csv","bib"],
+    accept_multiple_files=True,
+    label_visibility="collapsed"
+)
 
-st.markdown("")
-
-with st.expander("📋 Preview Search Queries", expanded=False):
-    for dim, queries in active_strings.items():
-        dk = dim[:2]
-        badge_cls = f"dim-{dk.lower()}"
-        st.markdown(f'<span class="dim-badge {badge_cls}">{dk}</span> **{dim}**', unsafe_allow_html=True)
-        for q in queries:
-            st.markdown(f"&nbsp;&nbsp;&nbsp;`{q['id']}` — {q['label']}")
-        st.markdown("")
-
-st.markdown("---")
-
-run_col, _ = st.columns([1, 3])
-with run_col:
-    run_clicked = st.button("🚀 Run Systematic Search", type="primary", use_container_width=True)
-
-if run_clicked:
-    if not active_strings:
-        st.error("Select at least one dimension.")
-        st.stop()
-
+if uploaded:
     all_papers = []
     stats = {"identification": {}, "total_raw": 0, "duplicates": 0, "after_dedup": 0}
+    parse_log = []
 
-    log_container = st.container()
-    progress_bar  = st.progress(0)
-    status_text   = st.empty()
+    for f in uploaded:
+        fname = f.name.lower()
 
-    total_ops = sum(len(q) for q in active_strings.values()) * dbs
-    op_done   = 0
+        # Detect query_id from filename
+        qid = "UNKNOWN"
+        for q in ["d1q1","d1q2","d2q1","d2q2","d2q3","d3q1","d3q2","d3q3"]:
+            if q in fname:
+                qid = q.upper(); break
 
-    with log_container:
-        st.markdown("### 📡 Search Log")
-        log_area = st.empty()
-        log_lines = []
+        content = f.read().decode("utf-8", errors="replace")
 
-        def log(msg, kind="info"):
-            icon = {"ok":"✅","err":"❌","info":"→","warn":"⚠️"}.get(kind,"→")
-            log_lines.append(f"`{datetime.now():%H:%M:%S}` {icon} {msg}")
-            log_area.markdown("\n\n".join(log_lines[-30:]))
+        if fname.endswith(".bib"):
+            papers = parse_bib(content, qid)
+            db = "ACM"
+        else:
+            csv_type = detect_csv_type(content)
+            if csv_type == "springer":
+                papers = parse_springer_csv(content, qid)
+                db = "Springer"
+            elif csv_type == "scopus":
+                papers = parse_scopus_csv(content, qid)
+                db = "Elsevier/Scopus"
+            else:
+                papers = parse_scholar_csv(content, qid)
+                db = "Google Scholar"
 
-        for dimension, queries in active_strings.items():
-            log(f"**Dimension: {dimension}**", "info")
-            for q in queries:
-                log(f"Query `{q['id']}` — {q['label']}", "info")
+        parse_log.append((f.name, db, qid, len(papers)))
+        stats["identification"].setdefault(db,{}).setdefault(qid,0)
+        stats["identification"][db][qid] += len(papers)
+        all_papers.extend(papers)
 
-                if use_springer:
-                    status_text.text(f"Springer → {q['id']}...")
-                    # FIXED: pass springer_oa (not springer_meta)
-                    results, err = search_springer(q["springer"], springer_oa, year_start, year_end)
-                    if err: log(f"Springer `{q['id']}`: {err}", "err")
-                    else:   log(f"Springer `{q['id']}` → {len(results)} results", "ok")
-                    for p in results: p.update({"dimension": dimension, "query_id": q["id"]})
-                    stats["identification"].setdefault("Springer",{}).setdefault(q["id"],0)
-                    stats["identification"]["Springer"][q["id"]] += len(results)
-                    all_papers.extend(results)
-                    op_done += 1; progress_bar.progress(op_done / total_ops)
+    # Dedup
+    unique, dupes = deduplicate(all_papers)
+    stats.update({"total_raw": len(all_papers), "duplicates": dupes, "after_dedup": len(unique)})
 
-                if use_elsevier:
-                    status_text.text(f"Elsevier → {q['id']}...")
-                    results, err = search_elsevier(q["elsevier"], elsevier_key, year_start, year_end)
-                    if err: log(f"Elsevier `{q['id']}`: {err}", "err")
-                    else:   log(f"Elsevier `{q['id']}` → {len(results)} results", "ok")
-                    for p in results: p.update({"dimension": dimension, "query_id": q["id"]})
-                    stats["identification"].setdefault("Elsevier/Scopus",{}).setdefault(q["id"],0)
-                    stats["identification"]["Elsevier/Scopus"][q["id"]] += len(results)
-                    all_papers.extend(results)
-                    op_done += 1; progress_bar.progress(op_done / total_ops)
-
-                if use_acm:
-                    status_text.text(f"ACM → {q['id']}...")
-                    results, err = search_acm(q["acm"], year_start, year_end)
-                    if err: log(f"ACM `{q['id']}`: {err}", "err")
-                    else:   log(f"ACM `{q['id']}` → {len(results)} results", "ok")
-                    for p in results: p.update({"dimension": dimension, "query_id": q["id"]})
-                    stats["identification"].setdefault("ACM",{}).setdefault(q["id"],0)
-                    stats["identification"]["ACM"][q["id"]] += len(results)
-                    all_papers.extend(results)
-                    op_done += 1; progress_bar.progress(op_done / total_ops)
-
-                if use_scholar:
-                    status_text.text(f"Google Scholar → {q['id']}...")
-                    results, err = search_scholar(q["generic"], year_start, year_end)
-                    if err: log(f"Scholar `{q['id']}`: {err}", "err")
-                    else:   log(f"Scholar `{q['id']}` → {len(results)} results", "ok")
-                    for p in results: p.update({"dimension": dimension, "query_id": q["id"]})
-                    stats["identification"].setdefault("Google Scholar",{}).setdefault(q["id"],0)
-                    stats["identification"]["Google Scholar"][q["id"]] += len(results)
-                    all_papers.extend(results)
-                    op_done += 1; progress_bar.progress(op_done / total_ops)
-
-        status_text.text("Deduplicating...")
-        unique, dupes = deduplicate(all_papers)
-        stats.update({"total_raw": len(all_papers), "duplicates": dupes, "after_dedup": len(unique)})
-        log(f"Deduplication: {len(all_papers)} raw → {dupes} removed → **{len(unique)} unique**", "ok")
-
-    progress_bar.progress(1.0)
-    status_text.text("Done!")
+    # Parse log
+    st.markdown("### Step 2 — Files Parsed")
+    for fname, db, qid, n in parse_log:
+        db_cls = {"Springer":"springer","ACM":"acm","Elsevier/Scopus":"scopus","Google Scholar":"scholar"}.get(db,"springer")
+        dim = QUERY_MAP.get(qid,"")
+        dim_cls = f"dim-{dim[:2].lower()}" if dim else ""
+        st.markdown(
+            f'`{fname}` → <span class="tag tag-{db_cls}">{db}</span> '
+            f'<span class="tag tag-{qid[:2].lower()}">{qid}</span> → **{n} papers**',
+            unsafe_allow_html=True
+        )
 
     st.markdown("---")
-    st.markdown("### 📊 Results Summary")
-    m1,m2,m3,m4 = st.columns(4)
-    with m1: st.markdown(f'<div class="metric-card"><div class="num">{stats["total_raw"]}</div><div class="lbl">Total Raw</div></div>', unsafe_allow_html=True)
-    with m2: st.markdown(f'<div class="metric-card"><div class="num">{stats["duplicates"]}</div><div class="lbl">Duplicates Removed</div></div>', unsafe_allow_html=True)
-    with m3: st.markdown(f'<div class="metric-card"><div class="num">{stats["after_dedup"]}</div><div class="lbl">For Screening</div></div>', unsafe_allow_html=True)
-    with m4:
+    st.markdown("### Step 3 — Summary")
+    c1,c2,c3,c4 = st.columns(4)
+    with c1: st.markdown(f'<div class="stat-box"><div class="stat-num">{stats["total_raw"]}</div><div class="stat-lbl">Total Raw</div></div>', unsafe_allow_html=True)
+    with c2: st.markdown(f'<div class="stat-box"><div class="stat-num">{stats["duplicates"]}</div><div class="stat-lbl">Duplicates Removed</div></div>', unsafe_allow_html=True)
+    with c3: st.markdown(f'<div class="stat-box"><div class="stat-num">{stats["after_dedup"]}</div><div class="stat-lbl">For Screening</div></div>', unsafe_allow_html=True)
+    with c4:
         d_counts = {}
         for p in unique:
             d = p.get("dimension","")[:2]
             d_counts[d] = d_counts.get(d,0)+1
         summary = " / ".join(f"{k}:{v}" for k,v in sorted(d_counts.items()))
-        st.markdown(f'<div class="metric-card"><div class="num" style="font-size:1.1rem">{summary}</div><div class="lbl">By Dimension</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="stat-box"><div class="stat-num" style="font-size:1.1rem">{summary}</div><div class="stat-lbl">By Dimension</div></div>', unsafe_allow_html=True)
 
-    if unique:
-        st.markdown("---")
-        st.markdown("### 📄 Papers Preview (first 50)")
-        import pandas as pd
-        preview_data = [{
-            "Dim": p.get("dimension","")[:2], "QID": p.get("query_id",""),
-            "DB":  p.get("database",""),      "Year": p.get("year",""),
-            "Title": p.get("title","")[:80],  "Authors": p.get("authors","")[:50],
-            "Source": p.get("source","")[:40],"DOI": p.get("doi",""),
-        } for p in unique[:50]]
-        st.dataframe(pd.DataFrame(preview_data), use_container_width=True, height=350)
-
+    # Preview
     st.markdown("---")
-    st.markdown("### 💾 Download Results")
-    dl1, dl2 = st.columns(2)
-    with dl1:
-        excel_bytes = build_excel_bytes(unique, stats)
-        fname = f"systematic_review_{datetime.now():%Y%m%d_%H%M}.xlsx"
-        st.download_button(label="📥 Download PRISMA Excel", data=excel_bytes,
-            file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True)
-    with dl2:
-        json_bytes = json.dumps({"stats": stats, "papers": unique}, indent=2, ensure_ascii=False).encode()
-        st.download_button(label="📥 Download Raw JSON", data=json_bytes,
-            file_name=f"raw_results_{datetime.now():%Y%m%d_%H%M}.json",
-            mime="application/json", use_container_width=True)
+    st.markdown("### Step 4 — Preview")
+    df = pd.DataFrame([{
+        "QID": p.get("query_id",""), "DB": p.get("database",""),
+        "Year": p.get("year",""), "Type": p.get("type",""),
+        "Title": p.get("title","")[:70], "Authors": p.get("authors","")[:40],
+        "DOI": p.get("doi",""),
+    } for p in unique[:100]])
+    st.dataframe(df, use_container_width=True, height=320)
 
-    st.success(f"✅ Search complete! {stats['after_dedup']} papers ready for PRISMA screening.")
+    # Download
+    st.markdown("---")
+    st.markdown("### Step 5 — Download PRISMA Excel")
+    excel_bytes = build_excel(unique, stats)
+    fname_out = f"systematic_review_imported_{datetime.now():%Y%m%d_%H%M}.xlsx"
+    st.download_button(
+        label="📥 Download PRISMA Excel",
+        data=excel_bytes,
+        file_name=fname_out,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        type="primary",
+    )
+    st.success(f"✅ {stats['after_dedup']} papers imported → ready for PRISMA screening!")
 
 else:
-    st.markdown("### How to use")
-    st.markdown("""
-1. **Configure** API keys + parameters in the sidebar
-2. **Select** databases and dimensions
-3. Click **🚀 Run Systematic Search**
-4. **Download** Excel → screen papers in `Screening_Sheet` tab
-5. Fill **`Concept_Matrix_W&W`** for included papers
-6. Update **`PRISMA_Flow`** counts after each phase
-    """)
-    st.info("💡 Elsevier key works from your local PC. Springer Open Access key confirmed working.")
+    st.markdown("---")
+    st.markdown("### File naming convention")
+    data = {
+        "File": ["springer_d1q1.csv","springer_d1q2.csv","acm_d1q1.bib","acm_d1q2.bib",
+                 "scopus_d1q1.csv","scopus_d1q2.csv","scholar_d1q1.csv","scholar_d1q2.csv"],
+        "DB": ["Springer"]*2 + ["ACM"]*2 + ["Elsevier/Scopus"]*2 + ["Google Scholar"]*2,
+        "Query": ["D1Q1","D1Q2","D1Q1","D1Q2","D1Q1","D1Q2","D1Q1","D1Q2"],
+        "Format": ["CSV"]*2 + ["BibTeX"]*2 + ["CSV"]*4,
+    }
+    st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
+    st.info("💡 Include the query ID (d1q1, d2q2 etc.) in every filename — the app uses it to assign papers to the right dimension.")
