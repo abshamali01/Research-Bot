@@ -1,7 +1,5 @@
 """
-Systematic Review — File Importer v2
-Upload CSV (Springer/Scopus/Scholar) + BIB (ACM)
-→ PRISMA Excel with separate sheets for missing year / missing DOI
+Systematic Review — File Importer v3
 """
 
 import streamlit as st
@@ -38,13 +36,13 @@ QUERY_MAP = {
 }
 
 EXCLUSION_CRITERIA = [
-    "E1: Outside year range (2015–2026)", "E2: Not English",
+    "E1: Outside year range (2015-2026)", "E2: Not English",
     "E3: Not journal/conference/review paper", "E4: Not relevant to dimension topic",
     "E5: Duplicate", "E6: Full text not accessible",
     "E7: Abstract only / insufficient detail", "E8: Not peer-reviewed",
 ]
 
-# ─── Parsers ──────────────────────────────────────────────────────────────────
+# ── Parsers ───────────────────────────────────────────────────────────────────
 
 def parse_springer_csv(content, query_id):
     papers = []
@@ -88,9 +86,7 @@ def parse_scopus_csv(content, query_id):
         st.warning(f"Scopus parse error: {e}")
     return papers
 
-
 def parse_scopus_pop_csv(content, query_id):
-    """Parse Scopus CSV exported via Publish or Perish (different columns than direct Scopus export)"""
     papers = []
     try:
         reader = csv.DictReader(io.StringIO(content))
@@ -108,7 +104,6 @@ def parse_scopus_pop_csv(content, query_id):
                 "dimension": QUERY_MAP.get(query_id,""),
             })
     except Exception as e:
-        import streamlit as st
         st.warning(f"Scopus PoP parse error: {e}")
     return papers
 
@@ -159,88 +154,91 @@ def parse_bib(content, query_id):
 def detect_csv_type(content, fname=""):
     first  = content.split('\n')[0].lower()
     second = content.split('\n')[1].lower() if len(content.split('\n')) > 1 else ""
-    # Filename priority
     if "scopus"   in fname: return "scopus_pop"
     if "springer" in fname: return "springer"
     if "scholar"  in fname: return "scholar"
-    # Header detection
     if "item title"   in first: return "springer"
     if "source title" in first: return "scopus"
-    # Scopus via Publish or Perish — has scopus.com URLs in data rows
-    if "scopus.com" in second:  return "scopus_pop"
+    if "scopus.com"   in second: return "scopus_pop"
     return "scholar"
 
 def deduplicate(papers):
-    seen_doi, seen_title, unique, dupes = set(), set(), [], 0
+    seen_doi, seen_title, unique, dupe_list = set(), set(), [], []
     for p in papers:
         doi   = p.get("doi","").strip().lower()
         title = p.get("title","").strip().lower()[:80]
         key   = doi if doi else title
-        if key and key in seen_doi:       dupes += 1; continue
-        if key:                            seen_doi.add(key)
-        if title and title in seen_title:  dupes += 1; continue
-        if title:                          seen_title.add(title)
+        if key and key in seen_doi:        dupe_list.append(p); continue
+        if key:                             seen_doi.add(key)
+        if title and title in seen_title:   dupe_list.append(p); continue
+        if title:                           seen_title.add(title)
         unique.append(p)
-    return unique, dupes
+    return unique, dupe_list
 
 def is_valid_year(y):
     return str(y).strip().isdigit() and 2015 <= int(str(y).strip()) <= 2026
 
-# ─── Excel Builder ────────────────────────────────────────────────────────────
+# ── Excel Builder ─────────────────────────────────────────────────────────────
 
-def build_excel(papers, stats):
+def build_excel(papers, stats, dupe_list):
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
 
     H_FILL  = PatternFill("solid", start_color="1F4E79")
     H_FONT  = Font(bold=True, color="FFFFFF", name="Arial", size=10)
-    W_FILL  = PatternFill("solid", start_color="FFF2CC")  # warning yellow
-    M_FILL  = PatternFill("solid", start_color="FFE0E0")  # missing red
+    W_FILL  = PatternFill("solid", start_color="FFF2CC")
+    M_FILL  = PatternFill("solid", start_color="FFE0E0")
+    D_FILL  = PatternFill("solid", start_color="E8EAF6")
     THIN    = Side(style="thin", color="BFBFBF")
     BDR     = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
     DIM_CLR = {"D1":"D6E4F0","D2":"D5E8D4","D3":"FFF2CC"}
     PH_CLR  = {"Identification":"D6E4F0","Screening":"D5E8D4","Eligibility":"FFF2CC","Included":"FCE4D6"}
 
-    # Categorize papers
-    main_papers    = [p for p in papers if is_valid_year(p.get("year","")) and p.get("doi","").strip()]
-    missing_year   = [p for p in papers if not str(p.get("year","")).strip().isdigit() or not is_valid_year(p.get("year",""))]
-    missing_doi    = [p for p in papers if not p.get("doi","").strip() and is_valid_year(p.get("year",""))]
+    main_papers  = [p for p in papers if is_valid_year(p.get("year","")) and p.get("doi","").strip()]
+    missing_year = [p for p in papers if not str(p.get("year","")).strip().isdigit() or not is_valid_year(p.get("year",""))]
+    missing_doi  = [p for p in papers if not p.get("doi","").strip() and is_valid_year(p.get("year",""))]
 
     wb = openpyxl.Workbook()
 
-    # ─── Helper: write screening columns ──────────────────────────────────────
+    # ── SCREEN_COLS: simplified — only 8 columns as requested ─────────────────
     SCREEN_COLS = [
-        ("ID",6),("Dimension",18),("Query ID",8),("Database",14),("Title",42),
-        ("Authors",22),("Year",6),("Source / Journal",24),("DOI",26),("URL",26),
-        ("Abstract (snippet)",45),("Title Screen\nY/N",10),("Title Screen\nReason",22),
-        ("Abstract Screen\nY/N",10),("Abstract Screen\nReason",22),
-        ("Full Text\nRetrieved?",10),("Eligible?\nY/N",10),
-        ("Exclusion\nReason",20),("Included\nFinal Y/N",10),("Notes",28),
+        ("Database",       14),
+        ("Title",          50),
+        ("Authors",        25),
+        ("Year",            6),
+        ("Source / Journal",26),
+        ("DOI",            28),
+        ("URL",            28),
+        ("Abstract (snippet)", 50),
     ]
 
-    def write_screening_sheet(ws, paper_list, fill_override=None):
-        ws.freeze_panes = "A2"
+    def write_screen(ws, paper_list, row_fill_fn=None, start_row=1):
+        ws.freeze_panes = f"A{start_row+1}"
         for ci,(name,width) in enumerate(SCREEN_COLS,1):
-            c = ws.cell(row=1, column=ci, value=name)
+            c = ws.cell(row=start_row, column=ci, value=name)
             c.font=H_FONT; c.fill=H_FILL; c.border=BDR
             c.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True)
             ws.column_dimensions[get_column_letter(ci)].width=width
-        ws.row_dimensions[1].height=36
-        for ri,p in enumerate(paper_list,2):
-            dk = p.get("dimension","")[:2]
-            fill = fill_override or PatternFill("solid", start_color=DIM_CLR.get(dk,"FFFFFF"))
-            vals = [f"{dk}_{ri-1:04d}",p.get("dimension",""),p.get("query_id",""),
-                    p.get("database",""),p.get("title",""),p.get("authors","")[:120],
-                    p.get("year",""),p.get("source","")[:60],p.get("doi",""),
-                    p.get("url","")[:100],p.get("abstract","")[:250],
-                    "","","","","","","","",""]
+        ws.row_dimensions[start_row].height=32
+        for ri,p in enumerate(paper_list, start_row+1):
+            fill = row_fill_fn(p) if row_fill_fn else PatternFill("solid", start_color=DIM_CLR.get(p.get("dimension","")[:2],"FFFFFF"))
+            vals = [
+                p.get("database",""),
+                p.get("title",""),
+                p.get("authors","")[:120],
+                p.get("year",""),
+                p.get("source","")[:60],
+                p.get("doi",""),
+                p.get("url","")[:100],
+                p.get("abstract","")[:300],
+            ]
             for ci,val in enumerate(vals,1):
                 c=ws.cell(row=ri,column=ci,value=val)
                 c.fill=fill; c.border=BDR
                 c.font=Font(name="Arial",size=9)
                 c.alignment=Alignment(wrap_text=True,vertical="top")
-        ws.auto_filter.ref=f"A1:{get_column_letter(len(SCREEN_COLS))}{len(paper_list)+1}"
+        ws.auto_filter.ref=f"A{start_row}:{get_column_letter(len(SCREEN_COLS))}{start_row+len(paper_list)}"
 
     # ── Sheet 1: PRISMA Flow ──────────────────────────────────────────────────
     ws = wb.active; ws.title = "PRISMA_Flow"
@@ -250,13 +248,9 @@ def build_excel(papers, stats):
     ws["B2"].font  = Font(bold=True, size=14, color="1F4E79", name="Arial")
     ws.merge_cells("B2:H2")
 
-    # Summary stats for PRISMA
-    total_raw      = stats.get("total_raw", 0)
-    total_dupes    = stats.get("duplicates", 0)
-    after_dedup    = stats.get("after_dedup", 0)
-    n_missing_year = len(missing_year)
-    n_missing_doi  = len(missing_doi)
-    n_main         = len(main_papers)
+    total_raw   = stats.get("total_raw", 0)
+    total_dupes = len(dupe_list)
+    after_dedup = stats.get("after_dedup", 0)
 
     hdrs = ["Phase","Step","Database","Query ID","n (raw)","n (after filter)","Notes"]
     wids = [18,42,18,12,12,16,50]
@@ -272,26 +266,24 @@ def build_excel(papers, stats):
         for qid,n in qc.items():
             rows.append(["Identification",f"Records identified: {db}",db,qid,n,"",""])
     rows += [
-        ["Identification", "Total records identified",          "All","ALL", total_raw,      "", "Sum of all DB results"],
-        ["Identification", "Duplicate records removed",         "All","ALL", total_dupes,    "", "Deduped by DOI + Title"],
-        ["Identification", "Records after deduplication",       "All","ALL", after_dedup,    "", ""],
-        ["Screening",      "Records screened (title/abstract)", "All","ALL", after_dedup,    "", "Manual screening required"],
-        ["Screening",      "⚠ Missing year — manual check",     "All","ALL", n_missing_year, "", "See 'Missing_Year' sheet"],
-        ["Screening",      "⚠ Missing DOI — manual check",      "All","ALL", n_missing_doi,  "", "See 'Missing_DOI' sheet"],
-        ["Screening",      "Records with year + DOI (main)",    "All","ALL", n_main,         "", "See 'Screening_Sheet'"],
-        ["Screening",      "Records excluded — title screen",   "All","ALL", "",             "", "Fill after manual screening"],
-        ["Screening",      "Records excluded — abstract screen","All","ALL", "",             "", "Fill after manual screening"],
-        ["Screening",      "Reports sought for retrieval",      "All","ALL", "",             "", ""],
-        ["Screening",      "Reports not retrieved",             "All","ALL", "",             "", ""],
-        ["Eligibility",    "Reports assessed for eligibility",  "All","ALL", "",             "", ""],
-        ["Eligibility",    "Reports excluded with reasons",     "All","ALL", "",             "", "E1–E8 (see Exclusion_Criteria)"],
-        ["Included",       "Studies included in final review",  "All","ALL", "",             "", "Fill after full screening"],
+        ["Identification","Total records identified",         "All","ALL",total_raw,   "","Sum of all DB results"],
+        ["Identification","Duplicate records removed",        "All","ALL",total_dupes, "","See Duplicates_Removed sheet"],
+        ["Identification","Records after deduplication",      "All","ALL",after_dedup, "",""],
+        ["Screening",     "Records screened (title/abstract)","All","ALL",after_dedup, "","Manual screening required"],
+        ["Screening",     "Missing year - manual check",      "All","ALL",len(missing_year),"","See Missing_Year sheet"],
+        ["Screening",     "Missing DOI - manual check",       "All","ALL",len(missing_doi), "","See Missing_DOI sheet"],
+        ["Screening",     "Records with year + DOI (main)",   "All","ALL",len(main_papers), "","See Screening_Sheet"],
+        ["Screening",     "Records excluded - title screen",  "All","ALL","","","Fill after manual screening"],
+        ["Screening",     "Records excluded - abstract",      "All","ALL","","","Fill after manual screening"],
+        ["Screening",     "Reports sought for retrieval",     "All","ALL","","",""],
+        ["Screening",     "Reports not retrieved",            "All","ALL","","",""],
+        ["Eligibility",   "Reports assessed for eligibility", "All","ALL","","",""],
+        ["Eligibility",   "Reports excluded with reasons",    "All","ALL","","","E1-E8 see Exclusion_Criteria"],
+        ["Included",      "Studies included in final review", "All","ALL","","","Fill after full screening"],
     ]
-
     for ri,row in enumerate(rows,5):
         fill = PatternFill("solid", start_color=PH_CLR.get(row[0],"FFFFFF"))
-        # Warning rows get yellow
-        if "⚠" in str(row[1]):
+        if "missing" in str(row[1]).lower() or "duplicate" in str(row[1]).lower():
             fill = W_FILL
         for ci,val in enumerate(row,2):
             c=ws.cell(row=ri,column=ci,value=val)
@@ -299,78 +291,41 @@ def build_excel(papers, stats):
             c.font=Font(name="Arial",size=9)
             c.alignment=Alignment(wrap_text=True,vertical="center")
 
-    # ── Sheet 2: Main Screening Sheet (has year + DOI) ────────────────────────
+    # ── Sheet 2: Screening Sheet (8 cols only) ────────────────────────────────
     ws2 = wb.create_sheet("Screening_Sheet")
-    write_screening_sheet(ws2, main_papers)
+    write_screen(ws2, main_papers)
 
-    # ── Sheet 3: Missing Year ─────────────────────────────────────────────────
+    # ── Sheet 3: Duplicates Removed ───────────────────────────────────────────
+    ws_dup = wb.create_sheet("Duplicates_Removed")
+    ws_dup["A1"].value = f"Duplicates removed ({len(dupe_list)}) — verify deduplication is correct"
+    ws_dup["A1"].font  = Font(bold=True, size=12, color="2E4057", name="Arial")
+    ws_dup.merge_cells(f"A1:{get_column_letter(len(SCREEN_COLS))}1")
+    ws_dup.row_dimensions[1].height = 20
+    write_screen(ws_dup, dupe_list, row_fill_fn=lambda p: D_FILL, start_row=2)
+
+    # ── Sheet 4: Missing Year ─────────────────────────────────────────────────
     ws_my = wb.create_sheet("Missing_Year")
-    ws_my["B1"].value = f"⚠ Papers with missing or invalid year ({len(missing_year)} papers) — verify manually"
-    ws_my["B1"].font  = Font(bold=True, size=12, color="7F6000", name="Arial")
-    ws_my.merge_cells("B1:T1")
-    ws_my.row_dimensions[1].height = 22
+    ws_my["A1"].value = f"Missing/invalid year ({len(missing_year)}) — verify manually"
+    ws_my["A1"].font  = Font(bold=True, size=12, color="7F6000", name="Arial")
+    ws_my.merge_cells(f"A1:{get_column_letter(len(SCREEN_COLS))}1")
+    ws_my.row_dimensions[1].height = 20
+    write_screen(ws_my, missing_year, row_fill_fn=lambda p: W_FILL, start_row=2)
 
-    # Write header on row 2
-    for ci,(name,width) in enumerate(SCREEN_COLS,1):
-        c=ws_my.cell(row=2,column=ci,value=name)
-        c.font=H_FONT; c.fill=PatternFill("solid",start_color="7F6000"); c.border=BDR
-        c.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True)
-        ws_my.column_dimensions[get_column_letter(ci)].width=width
-    ws_my.row_dimensions[2].height=36
-    ws_my.freeze_panes="A3"
-
-    for ri,p in enumerate(missing_year,3):
-        dk = p.get("dimension","")[:2]
-        vals=[f"MY_{ri-2:04d}",p.get("dimension",""),p.get("query_id",""),
-              p.get("database",""),p.get("title",""),p.get("authors","")[:120],
-              p.get("year","") or "MISSING",p.get("source","")[:60],p.get("doi",""),
-              p.get("url","")[:100],p.get("abstract","")[:250],
-              "","","","","","","","",""]
-        for ci,val in enumerate(vals,1):
-            c=ws_my.cell(row=ri,column=ci,value=val)
-            c.fill=W_FILL; c.border=BDR
-            c.font=Font(name="Arial",size=9)
-            c.alignment=Alignment(wrap_text=True,vertical="top")
-    ws_my.auto_filter.ref=f"A2:{get_column_letter(len(SCREEN_COLS))}{len(missing_year)+2}"
-
-    # ── Sheet 4: Missing DOI ──────────────────────────────────────────────────
+    # ── Sheet 5: Missing DOI ──────────────────────────────────────────────────
     ws_md = wb.create_sheet("Missing_DOI")
-    ws_md["B1"].value = f"⚠ Papers with missing DOI ({len(missing_doi)} papers) — verify + add DOI manually"
-    ws_md["B1"].font  = Font(bold=True, size=12, color="8B1A1A", name="Arial")
-    ws_md.merge_cells("B1:T1")
-    ws_md.row_dimensions[1].height = 22
+    ws_md["A1"].value = f"Missing DOI ({len(missing_doi)}) — add DOI manually then move to Screening_Sheet"
+    ws_md["A1"].font  = Font(bold=True, size=12, color="8B1A1A", name="Arial")
+    ws_md.merge_cells(f"A1:{get_column_letter(len(SCREEN_COLS))}1")
+    ws_md.row_dimensions[1].height = 20
+    write_screen(ws_md, missing_doi, row_fill_fn=lambda p: M_FILL, start_row=2)
 
-    # Extra column: Manual DOI entry
-    DOI_COLS = SCREEN_COLS + [("Manual DOI\n(fill here)", 30)]
-    for ci,(name,width) in enumerate(DOI_COLS,1):
-        c=ws_md.cell(row=2,column=ci,value=name)
-        c.font=H_FONT; c.fill=PatternFill("solid",start_color="8B1A1A"); c.border=BDR
-        c.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True)
-        ws_md.column_dimensions[get_column_letter(ci)].width=width
-    ws_md.row_dimensions[2].height=36
-    ws_md.freeze_panes="A3"
-
-    for ri,p in enumerate(missing_doi,3):
-        dk=p.get("dimension","")[:2]
-        vals=[f"MD_{ri-2:04d}",p.get("dimension",""),p.get("query_id",""),
-              p.get("database",""),p.get("title",""),p.get("authors","")[:120],
-              p.get("year",""),p.get("source","")[:60],"DOI MISSING",
-              p.get("url","")[:100],p.get("abstract","")[:250],
-              "","","","","","","","","",""]
-        for ci,val in enumerate(vals,1):
-            c=ws_md.cell(row=ri,column=ci,value=val)
-            c.fill=M_FILL; c.border=BDR
-            c.font=Font(name="Arial",size=9)
-            c.alignment=Alignment(wrap_text=True,vertical="top")
-    ws_md.auto_filter.ref=f"A2:{get_column_letter(len(DOI_COLS))}{len(missing_doi)+2}"
-
-    # ── Sheet 5: Concept Matrix ───────────────────────────────────────────────
+    # ── Sheet 6: Concept Matrix ───────────────────────────────────────────────
     ws3=wb.create_sheet("Concept_Matrix_W&W")
     ws3.column_dimensions["A"].width=3; ws3.column_dimensions["B"].width=4
     ws3["C2"].value="Webster & Watson (2002) Concept Matrix"
     ws3["C2"].font=Font(bold=True,size=14,color="1F4E79",name="Arial")
     ws3.merge_cells("C2:T2")
-    ws3["C3"].value="✓ = concept addressed. Add included papers as rows after full screening."
+    ws3["C3"].value="Add included papers as rows after screening. Mark with check where concept is addressed."
     ws3["C3"].font=Font(italic=True,size=9,color="595959")
     concepts=["Data\nStandards","AI-\nReadiness","Machine-\nReadable","Semantic\nAnnotation",
               "Context\nEngineering","Context\nWindow","Prompt\nDesign","Structured\nContext","Knowledge\nRepresent.",
@@ -406,7 +361,7 @@ def build_excel(papers, stats):
             c.alignment=Alignment(horizontal="center",vertical="center")
         ws3.row_dimensions[ri].height=18
 
-    # ── Sheet 6: Exclusion Criteria ───────────────────────────────────────────
+    # ── Sheet 7: Exclusion Criteria ───────────────────────────────────────────
     ws4=wb.create_sheet("Exclusion_Criteria")
     ws4["B2"].value="Exclusion Criteria Reference (PRISMA)"
     ws4["B2"].font=Font(bold=True,size=13,color="1F4E79",name="Arial")
@@ -422,15 +377,15 @@ def build_excel(papers, stats):
     return buf.read()
 
 
-# ─── UI ───────────────────────────────────────────────────────────────────────
+# ── UI ────────────────────────────────────────────────────────────────────────
 
-st.markdown("# 📥 Systematic Review — File Importer")
-st.markdown("Upload exported files → auto-parse → PRISMA Excel with quality checks")
+st.markdown("# Systematic Review - File Importer")
+st.markdown("Upload exported files -> auto-parse -> PRISMA Excel with quality checks")
 st.markdown("---")
 
-st.markdown("### Step 1 — Upload Files")
+st.markdown("### Step 1 - Upload Files")
 st.markdown("Name files like `springer_d1q1.csv`, `acm_d1q2.bib`, `scopus_d2q1.csv`, `scholar_d3q1.csv`")
-st.caption("Supported: Springer CSV · Scopus CSV · Google Scholar CSV (Publish or Perish) · ACM BibTeX (.bib)")
+st.caption("Supported: Springer CSV / Scopus CSV / Google Scholar CSV (Publish or Perish) / ACM BibTeX (.bib)")
 
 uploaded = st.file_uploader("Drop all files here", type=["csv","bib"],
                               accept_multiple_files=True, label_visibility="collapsed")
@@ -465,28 +420,23 @@ if uploaded:
         stats["identification"][db][qid] += len(papers)
         all_papers.extend(papers)
 
-    unique, dupes = deduplicate(all_papers)
-    stats.update({"total_raw": len(all_papers), "duplicates": dupes, "after_dedup": len(unique)})
+    unique, dupe_list = deduplicate(all_papers)
+    stats.update({"total_raw": len(all_papers), "duplicates": len(dupe_list), "after_dedup": len(unique)})
 
-    # Categorize
     main_papers  = [p for p in unique if is_valid_year(p.get("year","")) and p.get("doi","").strip()]
     missing_year = [p for p in unique if not str(p.get("year","")).strip().isdigit() or not is_valid_year(p.get("year",""))]
     missing_doi  = [p for p in unique if not p.get("doi","").strip() and is_valid_year(p.get("year",""))]
 
-    # ── Step 2: Parse log
-    st.markdown("### Step 2 — Files Parsed")
+    st.markdown("### Step 2 - Files Parsed")
     for fname, db, qid, n in parse_log:
         db_cls = {"Springer":"springer","ACM":"acm","Elsevier/Scopus":"scopus","Google Scholar":"scholar"}.get(db,"springer")
-        st.markdown(
-            f'`{fname}` → <span class="tag tag-{db_cls}">{db}</span> `{qid}` → **{n} papers**',
-            unsafe_allow_html=True)
+        st.markdown(f'`{fname}` -> <span class="tag tag-{db_cls}">{db}</span> `{qid}` -> **{n} papers**', unsafe_allow_html=True)
 
-    # ── Step 3: Summary
     st.markdown("---")
-    st.markdown("### Step 3 — Summary")
+    st.markdown("### Step 3 - Summary")
     c1,c2,c3,c4 = st.columns(4)
     with c1: st.markdown(f'<div class="stat-box"><div class="stat-num">{stats["total_raw"]}</div><div class="stat-lbl">Total Raw</div></div>', unsafe_allow_html=True)
-    with c2: st.markdown(f'<div class="stat-box"><div class="stat-num">{stats["duplicates"]}</div><div class="stat-lbl">Duplicates Removed</div></div>', unsafe_allow_html=True)
+    with c2: st.markdown(f'<div class="stat-box"><div class="stat-num">{len(dupe_list)}</div><div class="stat-lbl">Duplicates Removed</div></div>', unsafe_allow_html=True)
     with c3: st.markdown(f'<div class="stat-box"><div class="stat-num">{stats["after_dedup"]}</div><div class="stat-lbl">Unique Papers</div></div>', unsafe_allow_html=True)
     with c4:
         d_counts = {}
@@ -497,54 +447,52 @@ if uploaded:
         st.markdown(f'<div class="stat-box"><div class="stat-num" style="font-size:1.1rem">{summary}</div><div class="stat-lbl">By Dimension</div></div>', unsafe_allow_html=True)
 
     st.markdown("")
-    c5,c6,c7 = st.columns(3)
-    with c5: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#2d6a2d">{len(main_papers)}</div><div class="stat-lbl">✅ Main (year + DOI)</div></div>', unsafe_allow_html=True)
-    with c6: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#7F6000">{len(missing_year)}</div><div class="stat-lbl">⚠ Missing Year</div></div>', unsafe_allow_html=True)
-    with c7: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#8B1A1A">{len(missing_doi)}</div><div class="stat-lbl">⚠ Missing DOI</div></div>', unsafe_allow_html=True)
+    c5,c6,c7,c8 = st.columns(4)
+    with c5: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#2d6a2d">{len(main_papers)}</div><div class="stat-lbl">Main (year+DOI)</div></div>', unsafe_allow_html=True)
+    with c6: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#2E4057">{len(dupe_list)}</div><div class="stat-lbl">Duplicates Sheet</div></div>', unsafe_allow_html=True)
+    with c7: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#7F6000">{len(missing_year)}</div><div class="stat-lbl">Missing Year</div></div>', unsafe_allow_html=True)
+    with c8: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#8B1A1A">{len(missing_doi)}</div><div class="stat-lbl">Missing DOI</div></div>', unsafe_allow_html=True)
 
-    # Warnings
     if missing_year:
-        st.markdown(f'<div class="warn-box">⚠️ <b>{len(missing_year)} papers</b> have missing/invalid year → exported to <b>Missing_Year</b> sheet for manual review</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="warn-box">**{len(missing_year)} papers** missing/invalid year -> Missing_Year sheet</div>', unsafe_allow_html=True)
     if missing_doi:
-        st.markdown(f'<div class="warn-box">⚠️ <b>{len(missing_doi)} papers</b> have no DOI → exported to <b>Missing_DOI</b> sheet — add DOIs manually then move to Screening_Sheet</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="warn-box">**{len(missing_doi)} papers** missing DOI -> Missing_DOI sheet</div>', unsafe_allow_html=True)
 
-    # ── Step 4: Preview
     st.markdown("---")
-    st.markdown("### Step 4 — Preview (first 100 main papers)")
+    st.markdown("### Step 4 - Preview (first 100 main papers)")
     df = pd.DataFrame([{
-        "QID": p.get("query_id",""), "DB": p.get("database",""),
-        "Year": p.get("year",""), "Type": p.get("type",""),
+        "DB": p.get("database",""), "Year": p.get("year",""),
         "Title": p.get("title","")[:70], "Authors": p.get("authors","")[:40],
-        "DOI": p.get("doi",""),
+        "Source": p.get("source","")[:40], "DOI": p.get("doi",""),
     } for p in main_papers[:100]])
     st.dataframe(df, use_container_width=True, height=300)
 
-    # ── Step 5: Excel sheets breakdown
     st.markdown("---")
-    st.markdown("### Step 5 — Excel Output (6 sheets)")
-    sheets_info = {
-        "PRISMA_Flow":        f"PRISMA 2020 tracker — all counts auto-filled",
-        "Screening_Sheet":    f"{len(main_papers)} papers with valid year + DOI",
+    st.markdown("### Step 5 - Excel Output (7 sheets)")
+    sheets = {
+        "PRISMA_Flow":        "PRISMA 2020 tracker — all counts auto-filled",
+        "Screening_Sheet":    f"{len(main_papers)} papers (year+DOI) — 8 columns only",
+        "Duplicates_Removed": f"{len(dupe_list)} removed duplicates — verify correctness",
         "Missing_Year":       f"{len(missing_year)} papers — check year manually",
         "Missing_DOI":        f"{len(missing_doi)} papers — add DOI manually",
         "Concept_Matrix_W&W": "Webster & Watson matrix — fill after screening",
-        "Exclusion_Criteria": "E1–E8 reference",
+        "Exclusion_Criteria": "E1-E8 reference",
     }
-    for sheet, desc in sheets_info.items():
-        color = "#FFE0E0" if "Missing" in sheet else "#f0f7ff"
-        st.markdown(f'<div style="background:{color};border-radius:4px;padding:6px 12px;margin:3px 0;font-family:JetBrains Mono,monospace;font-size:0.85rem"><b>{sheet}</b> — {desc}</div>', unsafe_allow_html=True)
+    colors = {"Duplicates_Removed":"#E8EAF6","Missing_Year":"#FFF8E8","Missing_DOI":"#FFE8E8"}
+    for sheet,desc in sheets.items():
+        color = colors.get(sheet,"#f0f7ff")
+        st.markdown(f'<div style="background:{color};border-radius:4px;padding:6px 12px;margin:3px 0;font-size:0.85rem"><b>{sheet}</b> — {desc}</div>', unsafe_allow_html=True)
 
-    # ── Download
     st.markdown("---")
-    excel_bytes = build_excel(unique, stats)
+    excel_bytes = build_excel(unique, stats, dupe_list)
     fname_out = f"systematic_review_{datetime.now():%Y%m%d_%H%M}.xlsx"
     st.download_button(
-        label="📥 Download PRISMA Excel",
+        label="Download PRISMA Excel",
         data=excel_bytes, file_name=fname_out,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True, type="primary",
     )
-    st.success(f"✅ Done! {stats['after_dedup']} unique papers → {len(main_papers)} main + {len(missing_year)} missing year + {len(missing_doi)} missing DOI")
+    st.success(f"Done! {stats['after_dedup']} unique papers -> {len(main_papers)} main + {len(dupe_list)} dupes + {len(missing_year)} missing year + {len(missing_doi)} missing DOI")
 
 else:
     st.markdown("---")
@@ -555,4 +503,4 @@ else:
         "Query":  ["D1Q1","D1Q2","D1Q1","D1Q2","D1Q1","D1Q1"],
         "Format": ["CSV","CSV","BibTeX","BibTeX","CSV","CSV"],
     }), use_container_width=True, hide_index=True)
-    st.info("💡 Query ID (d1q1, d2q2 etc.) must be in filename — app uses it to assign papers to correct dimension.")
+    st.info("Query ID (d1q1, d2q2 etc.) must be in filename.")
