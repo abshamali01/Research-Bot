@@ -88,6 +88,30 @@ def parse_scopus_csv(content, query_id):
         st.warning(f"Scopus parse error: {e}")
     return papers
 
+
+def parse_scopus_pop_csv(content, query_id):
+    """Parse Scopus CSV exported via Publish or Perish (different columns than direct Scopus export)"""
+    papers = []
+    try:
+        reader = csv.DictReader(io.StringIO(content))
+        for row in reader:
+            papers.append({
+                "title":    row.get("Title","").strip(),
+                "authors":  row.get("Authors","").strip(),
+                "year":     str(row.get("Year","")).strip(),
+                "source":   row.get("Source","").strip(),
+                "doi":      row.get("DOI","").strip(),
+                "abstract": row.get("Abstract","").strip(),
+                "url":      row.get("ArticleURL","").strip(),
+                "type":     row.get("Type","Article").strip(),
+                "database": "Elsevier/Scopus", "query_id": query_id,
+                "dimension": QUERY_MAP.get(query_id,""),
+            })
+    except Exception as e:
+        import streamlit as st
+        st.warning(f"Scopus PoP parse error: {e}")
+    return papers
+
 def parse_scholar_csv(content, query_id):
     papers = []
     try:
@@ -132,10 +156,18 @@ def parse_bib(content, query_id):
         })
     return [p for p in papers if p["title"]]
 
-def detect_csv_type(content):
-    first = content.split('\n')[0].lower()
-    if "item title" in first:   return "springer"
+def detect_csv_type(content, fname=""):
+    first  = content.split('\n')[0].lower()
+    second = content.split('\n')[1].lower() if len(content.split('\n')) > 1 else ""
+    # Filename priority
+    if "scopus"   in fname: return "scopus_pop"
+    if "springer" in fname: return "springer"
+    if "scholar"  in fname: return "scholar"
+    # Header detection
+    if "item title"   in first: return "springer"
     if "source title" in first: return "scopus"
+    # Scopus via Publish or Perish — has scopus.com URLs in data rows
+    if "scopus.com" in second:  return "scopus_pop"
     return "scholar"
 
 def deduplicate(papers):
@@ -419,11 +451,12 @@ if uploaded:
         if fname.endswith(".bib"):
             papers = parse_bib(content, qid); db = "ACM"
         else:
-            ctype = detect_csv_type(content)
+            ctype = detect_csv_type(content, fname)
             if ctype == "springer":
                 papers = parse_springer_csv(content, qid); db = "Springer"
-            elif ctype == "scopus":
-                papers = parse_scopus_csv(content, qid); db = "Elsevier/Scopus"
+            elif ctype in ("scopus", "scopus_pop"):
+                papers = parse_scopus_pop_csv(content, qid) if ctype == "scopus_pop" else parse_scopus_csv(content, qid)
+                db = "Elsevier/Scopus"
             else:
                 papers = parse_scholar_csv(content, qid); db = "Google Scholar"
 
