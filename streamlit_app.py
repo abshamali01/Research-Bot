@@ -1,12 +1,13 @@
 """
-Systematic Review — File Importer v4 (Fixed & Enhanced)
+Systematic Review — File Importer v5 (Production-Ready)
+Comprehensive abstract fetching with multiple fallback strategies
 """
 
 import streamlit as st
 import pandas as pd
-import io, re, csv, time, concurrent.futures, threading
+import io, re, csv, time, concurrent.futures, threading, json, os, hashlib
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 
 st.set_page_config(page_title="SR Importer", page_icon="📥", layout="wide")
 
@@ -119,7 +120,6 @@ def parse_bib(content, query_id):
         if not entry.startswith('@'): 
             entry = '@' + entry
         def get_field(field, text):
-            # Fixed regex with proper escaping
             pattern = rf'{re.escape(field)}\s*=\s*\{{(.+?)\}}\s*[,\}}]|{re.escape(field)}\s*=\s*"(.+?)"\s*[,\}}]'
             m = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
             if m:
@@ -187,13 +187,12 @@ from bs4 import BeautifulSoup
 
 _lock = threading.Lock()
 _request_times = []
-MAX_RPS = 5  # Max requests per second
+MAX_RPS = 3  # Conservative rate limit
 
 def rate_limit():
     """Simple rate limiter to avoid being blocked"""
     with _lock:
         now = time.time()
-        # Remove requests older than 1 second
         _request_times[:] = [t for t in _request_times if now - t < 1.0]
         if len(_request_times) >= MAX_RPS:
             sleep_time = 1.0 - (now - _request_times[0])
@@ -210,13 +209,123 @@ def is_english(text):
 def clean_abstract(text):
     if not text: 
         return ""
-    # Remove XML/HTML tags
     text = re.sub(r'<[^>]+>', ' ', text)
-    # Remove extra whitespace
     text = re.sub(r'\s+', ' ', text).strip()
-    # Remove common prefixes
     text = re.sub(r'^(Abstract|ABSTRACT|Summary|SUMMARY)\s*[:\-]?\s*', '', text, flags=re.I)
     return text
+
+def normalize_doi(doi):
+    """Clean and normalize DOI string"""
+    if not doi:
+        return ""
+    doi = doi.strip()
+    # Remove common suffixes that aren't part of the DOI
+    doi = re.sub(r'/(abstract|full|pdf|reference|v2|v1|fulltext|advance-article-abstract|article-abstract|article-pdf)$', '', doi, flags=re.I)
+    doi = re.sub(r'\.short$', '', doi, flags=re.I)
+    doi = re.sub(r'\.abstract$', '', doi, flags=re.I)
+    # Remove URL prefix if present
+    doi = re.sub(r'^https?://(dx\.)?doi\.org/', '', doi, flags=re.I)
+    doi = re.sub(r'^doi:', '', doi, flags=re.I)
+    # Remove trailing slashes
+    doi = doi.rstrip('/')
+    return doi
+
+def is_pdf_url(url):
+    """Check if URL is a PDF or leads to PDF"""
+    if not url:
+        return False
+    url_lower = url.lower()
+    pdf_indicators = [
+        '.pdf', '/pdf/', '/content/pdf/', '/download?filename=', 
+        '/download_pub', '/article-pdf/', '/fulltext.pdf',
+        'pdf?download=1', '.pdf?download', '/pdfdownload',
+        '/bitstream/handle/', '/download/',
+        '/doi/pdf/', '/doi/abs/',  # Scopus inward links often redirect to PDF
+    ]
+    return any(ind in url_lower for ind in pdf_indicators)
+
+def is_blocked_site(url):
+    """Sites that block scraping or require special handling"""
+    if not url:
+        return False
+    blocked = [
+        'researchgate.net', 'ssrn.com', 'papers.ssrn',
+        'ebscohost.com', 
+        'cabidigitallibrary.org', 'ovid.com',
+        'google.com/books', 'books.google',
+        'sciengine.com',
+        'jstage.jst.go.jp',
+        'pubpub.org', 'assets.pubpub.org',
+    ]
+    url_lower = url.lower()
+    return any(b in url_lower for b in blocked)
+
+def is_scopus_inward(url):
+    """Scopus inward links are just redirects, not content pages"""
+    if not url:
+        return False
+    return 'scopus.com/inward' in url.lower()
+
+def is_preprint_server(url):
+    """Preprint servers often have different structures"""
+    if not url:
+        return False
+    preprints = [
+        'techrxiv.org', 'biorxiv.org', 'medrxiv.org', 'chemrxiv.org',
+        'preprints.org', 'arxiv.org', 'osf.io', 'researchsquare.com',
+        'hal.science', 'hal.archives-ouvertes',
+    ]
+    url_lower = url.lower()
+    return any(p in url_lower for p in preprints)
+
+def is_institutional_repo(url):
+    """Institutional repositories often have minimal metadata"""
+    if not url:
+        return False
+    repos = [
+        'theseus.fi', 'doria.fi', 'aaltodoc.aalto.fi', 'trepo.tuni.fi',
+        'lutpub.lut.fi', 'osuva.uwasa.fi', 'oulurepo.oulu.fi',
+        'ikee.lib.auth.gr', 'repository.', 'eprints.', 'wrap.warwick.ac.uk',
+        'stax.strath.ac.uk', 'journals.ekb.eg',
+        'uzpolymerjournal.com', 'llrjournal.com', 'jmacheng.not.pl',
+        'jisads.com', 'ijsrtjournal.com', 'irjms.com', 'ijeetc.com',
+        'ijama.in', 'ijsate.com', 'ijbei-journal.org', 'ijsir.org',
+        'inatgi.in', 'ajsat.org', 'cemrj.com', 'ceur-ws.org',
+        'journals.lww.com', 
+    ]
+    url_lower = url.lower()
+    return any(r in url_lower for r in repos)
+
+def fetch_with_retry(url, headers=None, timeout=15, max_retries=2):
+    """Fetch URL with retry logic and proper redirect handling"""
+    if headers is None:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate",
+            "Connection": "keep-alive",
+        }
+
+    for attempt in range(max_retries + 1):
+        try:
+            rate_limit()
+            r = _req.get(url, headers=headers, timeout=timeout, 
+                        allow_redirects=True, verify=False)
+            if r.status_code == 200:
+                return r
+            elif r.status_code in [301, 302, 307, 308]:
+                if 'location' in r.headers:
+                    return fetch_with_retry(r.headers['location'], headers, timeout, max_retries=0)
+            elif attempt < max_retries:
+                time.sleep(2 ** attempt)
+                continue
+        except Exception:
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+                continue
+            return None
+    return None
 
 def fetch_crossref(doi):
     """Fetch abstract from CrossRef API"""
@@ -227,7 +336,7 @@ def fetch_crossref(doi):
         r = _req.get(
             f"https://api.crossref.org/works/{doi}",
             headers={"User-Agent": "SystematicReview/1.0 (mailto:research@example.com)"}, 
-            timeout=8
+            timeout=10
         )
         if r.ok:
             data = r.json().get("message", {})
@@ -241,16 +350,16 @@ def fetch_crossref(doi):
     return ""
 
 def fetch_semantic_scholar(doi):
-    """Fetch abstract from Semantic Scholar API (supports DOI lookup)"""
+    """Fetch abstract from Semantic Scholar API"""
     if not doi: 
         return ""
+
     try:
         rate_limit()
-        # Semantic Scholar supports DOI: prefix
         r = _req.get(
             f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}",
             params={"fields": "title,abstract,authors,year"}, 
-            timeout=8
+            timeout=10
         )
         if r.ok:
             data = r.json()
@@ -259,13 +368,13 @@ def fetch_semantic_scholar(doi):
                 return abstract
     except Exception:
         pass
-    # Try without DOI: prefix as fallback
+
     try:
         rate_limit()
         r = _req.get(
             f"https://api.semanticscholar.org/graph/v1/paper/{doi}",
             params={"fields": "title,abstract,authors,year"}, 
-            timeout=8
+            timeout=10
         )
         if r.ok:
             data = r.json()
@@ -284,17 +393,15 @@ def fetch_openalex(doi):
         rate_limit()
         r = _req.get(
             f"https://api.openalex.org/works/doi:{doi}",
-            timeout=8
+            timeout=10
         )
         if r.ok:
             data = r.json()
             abstract = data.get("abstract", "")
             if abstract and len(abstract) > 50 and is_english(abstract):
                 return abstract
-            # OpenAlex has inverted index abstracts
             abstract_inv = data.get("abstract_inverted_index")
             if abstract_inv:
-                # Reconstruct abstract from inverted index
                 words = []
                 for word, positions in abstract_inv.items():
                     for pos in positions:
@@ -308,114 +415,66 @@ def fetch_openalex(doi):
         pass
     return ""
 
+def fetch_europepmc(doi):
+    """Fetch abstract from Europe PMC"""
+    if not doi:
+        return ""
+    try:
+        rate_limit()
+        r = _req.get(
+            f"https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=DOI:{doi}&format=json&resultType=core",
+            timeout=10
+        )
+        if r.ok:
+            data = r.json()
+            results = data.get("resultList", {}).get("result", [])
+            if results:
+                abstract = results[0].get("abstractText", "")
+                if abstract and len(abstract) > 50 and is_english(abstract):
+                    return abstract
+    except Exception:
+        pass
+    return ""
+
 def fetch_by_doi(doi):
-    """Try multiple APIs in order: CrossRef -> Semantic Scholar -> OpenAlex"""
+    """Try multiple APIs in order"""
     if not doi: 
         return ""
 
-    # Try CrossRef first
-    abstract = fetch_crossref(doi)
-    if abstract: 
-        return abstract
-
-    # Try Semantic Scholar
-    abstract = fetch_semantic_scholar(doi)
-    if abstract: 
-        return abstract
-
-    # Try OpenAlex
-    abstract = fetch_openalex(doi)
-    if abstract: 
-        return abstract
+    for fetch_func in [fetch_crossref, fetch_semantic_scholar, fetch_openalex, fetch_europepmc]:
+        abstract = fetch_func(doi)
+        if abstract:
+            return abstract
 
     return ""
 
-def is_pdf_url(url):
-    """Check if URL is a PDF"""
-    if not url:
-        return False
-    url_lower = url.lower()
-    return url_lower.endswith('.pdf') or '/pdf/' in url_lower or url_lower.endswith('.pdf?download=1')
-
-def fetch_by_url(url):
-    """Enhanced URL scraping with publisher-specific selectors and better handling"""
-    if not url: 
+def scrape_abstract_from_html(html_content, url=""):
+    """Extract abstract from HTML using multiple strategies"""
+    if not html_content:
         return ""
 
-    # Skip PDFs - can't scrape HTML
-    if is_pdf_url(url):
-        return "[PDF - cannot scrape abstract from PDF]"
-
-    # Skip SSRN - requires special handling (often blocked or JS-rendered)
-    if "ssrn.com" in url.lower() or "papers.ssrn" in url.lower():
-        return "[SSRN - abstract not available via scraping]"
-
     try:
-        rate_limit()
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-        }
-        r = _req.get(url, headers=headers, timeout=12, allow_redirects=True)
-        if not r.ok: 
-            return ""
+        soup = BeautifulSoup(html_content, "html.parser")
 
-        content_type = r.headers.get('Content-Type', '')
-        if 'pdf' in content_type.lower():
-            return "[PDF - cannot scrape abstract from PDF]"
-
-        soup = BeautifulSoup(r.text, "html.parser")
-
-        # Remove script and style elements
         for script in soup(["script", "style", "nav", "header", "footer"]):
             script.decompose()
 
-        # Publisher-specific selectors (ordered by priority)
         selectors = [
-            # ACM Digital Library
-            "div.abstract",
-            "section.abstract",
-            "div#abstract",
-            "div.abstractSection",
-            "p.abstract",
-            "#Abs1-content",
-            "div[class*='abstract']",
-            "section[class*='abstract']",
-
-            # Springer
-            "section[data-title='Abstract']",
-            "div.c-article-section__content",
-            "div.Abstract",
-
-            # IEEE
-            "div.abstract-text",
-            "div.u-mb-1",
-
-            # ScienceDirect / Elsevier
-            "div.Abstracts",
-            "div#abstracts",
-
-            # SSRN
-            "div.abstract-text",
-            "div#abstract",
-
-            # General meta tags
-            "meta[name='description']",
-            "meta[property='og:description']",
-            "meta[name='citation_abstract']",
-
-            # arXiv
-            "blockquote.abstract",
-            "div.abstract",
-
-            # Generic
-            "article div.abstract",
-            "#abstract",
-            ".abstract",
+            "div.abstract", "section.abstract", "div#abstract", 
+            "div.abstractSection", "p.abstract", "#Abs1-content",
+            "div[class*='abstract']", "section[class*='abstract']",
+            "section[data-title='Abstract']", "div.c-article-section__content",
+            "div.Abstract", "div#Abs1",
+            "div.abstract-text", "div.u-mb-1", "div.abstract-body",
+            "div.Abstracts", "div#abstracts", "div.abstract.content",
+            "div.article-section__content", "section.article-section",
+            "div.abstractSection", "div.NLM_sec",
+            "div.abstract-content", "section.abstract",
+            "blockquote.abstract", "div.abstract",
+            "meta[name='description']", "meta[property='og:description']",
+            "meta[name='citation_abstract']", "meta[name='DC.Description']",
+            "article div.abstract", "#abstract", ".abstract",
+            "div[role='main'] p", "main p",
         ]
 
         for sel in selectors:
@@ -433,29 +492,58 @@ def fetch_by_url(url):
             except Exception:
                 continue
 
-        # Fallback: try to find any paragraph containing "abstract" in nearby text
-        for p in soup.find_all(['p', 'div']):
-            try:
-                text = p.get_text(" ", strip=True)
-                if len(text) > 100 and len(text) < 3000:
-                    parent_text = ""
-                    if p.parent:
-                        parent_text = p.parent.get_text(" ", strip=True)[:200].lower()
-                    class_text = ""
-                    if p.get('class'):
-                        class_text = ' '.join(p.get('class', [])).lower()
+        for heading in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'strong', 'b']):
+            heading_text = heading.get_text(strip=True).lower()
+            if 'abstract' in heading_text and len(heading_text) < 20:
+                next_el = heading.find_next(['p', 'div'])
+                if next_el:
+                    text = next_el.get_text(" ", strip=True)
+                    text = clean_abstract(text)
+                    if len(text) > 80 and is_english(text) and len(text) < 5000:
+                        return text
 
-                    if 'abstract' in parent_text or 'abstract' in class_text:
-                        text = clean_abstract(text)
-                        if len(text) > 80 and is_english(text):
-                            return text
-            except Exception:
-                continue
+        paragraphs = soup.find_all('p')
+        best_abstract = ""
+        for p in paragraphs:
+            text = p.get_text(" ", strip=True)
+            if len(text) > len(best_abstract) and len(text) > 100 and len(text) < 3000:
+                academic_words = ['study', 'research', 'method', 'results', 'analysis', 
+                                'data', 'model', 'system', 'proposed', 'approach']
+                text_lower = text.lower()
+                if any(word in text_lower for word in academic_words):
+                    best_abstract = text
+
+        if best_abstract:
+            return clean_abstract(best_abstract)
 
     except Exception:
         pass
 
     return ""
+
+def fetch_by_url(url):
+    """Enhanced URL scraping with site-specific handling"""
+    if not url: 
+        return ""
+
+    if is_pdf_url(url):
+        return "[PDF - cannot extract abstract from PDF file]"
+
+    if is_blocked_site(url):
+        return "[Blocked site - requires login or anti-bot protection]"
+
+    if is_scopus_inward(url):
+        return "[Scopus inward link - redirect only, no content]"
+
+    r = fetch_with_retry(url)
+    if not r:
+        return ""
+
+    content_type = r.headers.get('Content-Type', '')
+    if 'pdf' in content_type.lower():
+        return "[PDF - cannot extract abstract from PDF file]"
+
+    return scrape_abstract_from_html(r.text, url)
 
 def build_doi_url(doi):
     if not doi: 
@@ -467,31 +555,30 @@ def build_doi_url(doi):
 
 def fetch_abstract_for_paper(paper):
     """Fetch abstract for a single paper using all available methods"""
-    doi = paper.get("doi", "").strip()
+    doi = normalize_doi(paper.get("doi", ""))
     url = paper.get("url", "").strip()
 
-    # Try DOI-based APIs first
+    # Try DOI-based APIs first (most reliable)
     if doi:
         abstract = fetch_by_doi(doi)
         if abstract: 
             return abstract
 
-        # Try doi.org URL as fallback
         doi_url = build_doi_url(doi)
         abstract = fetch_by_url(doi_url)
-        if abstract: 
+        if abstract and not abstract.startswith('['):
             return abstract
 
-    # Try original URL if different from doi.org and not a PDF
+    # Try original URL if different from doi.org and not problematic
     if url and url != build_doi_url(doi):
-        if not is_pdf_url(url):
+        if not is_pdf_url(url) and not is_blocked_site(url) and not is_scopus_inward(url):
             abstract = fetch_by_url(url)
-            if abstract: 
+            if abstract and not abstract.startswith('['):
                 return abstract
 
     return ""
 
-def fetch_abstracts_concurrent(papers, max_workers=5):
+def fetch_abstracts_concurrent(papers, max_workers=3):
     """Fetch abstracts concurrently with rate limiting"""
     results = {}
     found = 0
@@ -506,7 +593,7 @@ def fetch_abstracts_concurrent(papers, max_workers=5):
         for future in concurrent.futures.as_completed(futures):
             idx, abstract = future.result()
             results[idx] = abstract
-            if abstract:
+            if abstract and not abstract.startswith('['):
                 found += 1
 
     return results, found
@@ -528,7 +615,6 @@ def build_excel(papers, stats, dupe_list):
     DIM_CLR = {"D1": "D6E4F0", "D2": "D5E8D4", "D3": "FFF2CC"}
     PH_CLR  = {"Identification": "D6E4F0", "Screening": "D5E8D4", "Eligibility": "FFF2CC", "Included": "FCE4D6"}
 
-    # Compute subsets from papers (which is unique with abstracts)
     main_papers  = papers
     missing_year = [p for p in papers if not str(p.get("year", "")).strip().isdigit() or not is_valid_year(p.get("year", ""))]
     missing_doi  = [p for p in papers if not p.get("doi", "").strip()]
@@ -571,7 +657,7 @@ def build_excel(papers, stats, dupe_list):
                 p.get("source", "")[:60],
                 p.get("doi", ""),
                 p.get("url", "")[:100],
-                p.get("abstract", ""),  # Abstract from paper dict - this is the key fix!
+                p.get("abstract", ""),
             ]
             for ci, val in enumerate(vals, 1):
                 c = ws.cell(row=ri, column=ci, value=val)
@@ -755,7 +841,6 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap');
 
-/* Base theme overrides for dark professional look */
 html, body, [class*="css"] { 
     font-family: 'Inter', sans-serif; 
 }
@@ -764,7 +849,6 @@ html, body, [class*="css"] {
     background: linear-gradient(135deg, #0d1117 0%, #161b22 100%); 
 }
 
-/* Main title styling */
 h1 {
     font-family: 'Inter', sans-serif !important;
     font-weight: 700 !important;
@@ -777,7 +861,6 @@ h2, h3 {
     letter-spacing: -0.01em !important;
 }
 
-/* Custom card components */
 .sr-card {
     background: rgba(22, 27, 34, 0.8);
     backdrop-filter: blur(10px);
@@ -792,7 +875,6 @@ h2, h3 {
     box-shadow: 0 4px 20px rgba(88, 166, 255, 0.1);
 }
 
-/* Stat boxes */
 .stat-box {
     background: linear-gradient(135deg, rgba(88, 166, 255, 0.1) 0%, rgba(88, 166, 255, 0.05) 100%);
     border: 1px solid rgba(88, 166, 255, 0.2);
@@ -821,7 +903,6 @@ h2, h3 {
     font-weight: 500;
 }
 
-/* Tags */
 .tag {
     display: inline-block;
     padding: 4px 12px;
@@ -837,7 +918,6 @@ h2, h3 {
 .tag-scopus { background: rgba(88, 166, 255, 0.15); color: #58a6ff; border: 1px solid rgba(88, 166, 255, 0.3); }
 .tag-scholar { background: rgba(210, 153, 34, 0.15); color: #e3b341; border: 1px solid rgba(210, 153, 34, 0.3); }
 
-/* Warning boxes */
 .warn-box {
     background: rgba(210, 153, 34, 0.1);
     border: 1px solid rgba(210, 153, 34, 0.25);
@@ -848,7 +928,6 @@ h2, h3 {
     color: #e3b341;
 }
 
-/* Success boxes */
 .success-box {
     background: rgba(46, 160, 67, 0.1);
     border: 1px solid rgba(46, 160, 67, 0.25);
@@ -859,7 +938,6 @@ h2, h3 {
     color: #3fb950;
 }
 
-/* Info boxes */
 .info-box {
     background: rgba(88, 166, 255, 0.08);
     border: 1px solid rgba(88, 166, 255, 0.2);
@@ -870,13 +948,11 @@ h2, h3 {
     color: #58a6ff;
 }
 
-/* Progress bar styling */
 .stProgress > div > div {
     background: linear-gradient(90deg, #58a6ff 0%, #3fb950 100%) !important;
     border-radius: 4px !important;
 }
 
-/* Button enhancements */
 .stButton > button {
     border-radius: 8px !important;
     font-weight: 600 !important;
@@ -888,7 +964,6 @@ h2, h3 {
     box-shadow: 0 4px 12px rgba(88, 166, 255, 0.3) !important;
 }
 
-/* File uploader */
 [data-testid="stFileUploader"] {
     border: 2px dashed rgba(88, 166, 255, 0.3) !important;
     border-radius: 12px !important;
@@ -899,13 +974,11 @@ h2, h3 {
     background: rgba(22, 27, 34, 0.8) !important;
 }
 
-/* Dataframe styling */
 [data-testid="stDataFrame"] {
     border-radius: 8px !important;
     border: 1px solid rgba(88, 166, 255, 0.15) !important;
 }
 
-/* Divider styling */
 hr {
     border: none !important;
     height: 1px !important;
@@ -913,7 +986,6 @@ hr {
     margin: 24px 0 !important;
 }
 
-/* Sheet preview cards */
 .sheet-card {
     background: rgba(22, 27, 34, 0.6);
     border: 1px solid rgba(88, 166, 255, 0.15);
@@ -933,7 +1005,6 @@ hr {
     font-size: 0.8rem;
 }
 
-/* Custom scrollbar */
 ::-webkit-scrollbar {
     width: 8px;
     height: 8px;
@@ -1080,7 +1151,7 @@ if uploaded:
     st.markdown("---")
 
     need_abstract = [p for p in unique if p.get("doi", "").strip() or p.get("url", "").strip()]
-    est_mins = max(1, len(need_abstract) // 20)  # Faster with concurrent fetching
+    est_mins = max(1, len(need_abstract) // 15)
 
     st.markdown(f"""
     <div class="sr-card">
@@ -1095,10 +1166,9 @@ if uploaded:
 
     # Advanced options
     with st.expander("⚙️ Advanced Options"):
-        max_workers = st.slider("Concurrent fetch workers", 1, 10, 5, 
-                                help="Higher = faster but may hit rate limits")
-        skip_pdf = st.checkbox("Skip PDF URLs (faster)", value=True,
-                              help="Skip URLs ending in .pdf - cannot scrape abstracts from PDFs")
+        max_workers = st.slider("Concurrent fetch workers", 1, 5, 3, 
+                                help="Higher = faster but may hit rate limits. Recommended: 3")
+        st.info("💡 Many URLs in your dataset are PDFs, blocked sites, or preprints that cannot be scraped. These will be skipped automatically.")
 
     generate_clicked = st.button("🚀 Generate Excel", type="primary", use_container_width=True)
 
@@ -1116,10 +1186,20 @@ if uploaded:
 
                 status_text.markdown("🔄 **Fetching abstracts...**")
 
-                # Fetch abstracts concurrently with progress updates
+                # Categorize papers for better reporting
+                pdf_count = sum(1 for p in need_abstract if is_pdf_url(p.get("url", "")))
+                blocked_count = sum(1 for p in need_abstract if is_blocked_site(p.get("url", "")))
+                scopus_count = sum(1 for p in need_abstract if is_scopus_inward(p.get("url", "")))
+                preprint_count = sum(1 for p in need_abstract if is_preprint_server(p.get("url", "")))
+
+                if pdf_count or blocked_count or scopus_count or preprint_count:
+                    st.info(f"📋 Auto-skipping: {pdf_count} PDFs, {blocked_count} blocked sites, {scopus_count} Scopus links, {preprint_count} preprints (limited abstract availability)")
+
+                # Fetch abstracts concurrently
                 results = {}
                 found = 0
                 completed = 0
+                skipped = 0
 
                 def fetch_one(idx_paper):
                     idx, paper = idx_paper
@@ -1131,8 +1211,10 @@ if uploaded:
                     for future in concurrent.futures.as_completed(futures):
                         idx, abstract = future.result()
                         results[idx] = abstract
-                        if abstract:
+                        if abstract and not abstract.startswith('['):
                             found += 1
+                        elif abstract.startswith('['):
+                            skipped += 1
                         completed += 1
 
                         # Update progress
@@ -1148,7 +1230,7 @@ if uploaded:
                             t_str = "estimating..."
 
                         detail_text.markdown(
-                            f"**{pct}%** · ⏱ {t_str} · ✅ {found} fetched · 📄 {completed}/{total}"
+                            f"**{pct}%** · ⏱ {t_str} · ✅ {found} fetched · ⏭️ {skipped} skipped · 📄 {completed}/{total}"
                         )
 
                 # Apply results to papers
@@ -1157,7 +1239,7 @@ if uploaded:
 
                 prog_bar.progress(1.0)
                 total_sec = int(time.time() - t0)
-                status_text.markdown(f"✅ **Done!** Fetched {found}/{total} abstracts in {total_sec}s")
+                status_text.markdown(f"✅ **Done!** Fetched {found}/{total} abstracts in {total_sec}s ({skipped} auto-skipped)")
                 detail_text.empty()
 
             # Build Excel
@@ -1168,7 +1250,7 @@ if uploaded:
             st.session_state["excel_bytes"] = excel_bytes
             st.session_state["excel_fname"] = f"systematic_review_{datetime.now():%Y%m%d_%H%M}.xlsx"
             st.session_state["excel_ready"] = True
-            st.session_state["abstracts_filled"] = sum(1 for p in unique if p.get("abstract", "").strip())
+            st.session_state["abstracts_filled"] = sum(1 for p in unique if p.get("abstract", "").strip() and not p.get("abstract", "").startswith('['))
             st.session_state["total_papers"] = stats["after_dedup"]
             st.session_state["dupe_count"] = len(dupe_list)
 
