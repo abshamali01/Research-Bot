@@ -44,7 +44,7 @@ with st.sidebar:
     st.markdown("### Search Parameters")
     year_start = st.number_input("Year From", min_value=2000, max_value=2026, value=2015)
     year_end   = st.number_input("Year To",   min_value=2000, max_value=2026, value=2026)
-    max_per_db = st.slider("Max results per DB per query", 10, 100, 50, 10)
+    # Slider removed — fetch ALL results from each DB
     st.markdown("---")
     st.markdown("### Databases")
     use_springer = st.checkbox("Springer",            value=True)
@@ -117,7 +117,7 @@ EXCLUSION_CRITERIA = [
 ]
 
 # ── FIX 1: Springer — use OA key + openaccess endpoint ──────────────────────
-def search_springer(query, api_key, year_start, year_end, max_records=9999):
+def search_springer(query, api_key, year_start, year_end):
     import requests
     results, start = [], 1
     while True:
@@ -157,7 +157,7 @@ def search_springer(query, api_key, year_start, year_end, max_records=9999):
 
 
 # ── FIX 2: Elsevier — JSON via Accept header + apiKey param ─────────────────
-def search_elsevier(query, api_key, year_start, year_end, max_records=9999):
+def search_elsevier(query, api_key, year_start, year_end):
     import requests
     results, start = [], 0
     date_q = f"({query}) AND (PUBYEAR > {year_start-1} AND PUBYEAR < {year_end+1})"
@@ -204,7 +204,7 @@ def search_elsevier(query, api_key, year_start, year_end, max_records=9999):
     return results, None
 
 
-def search_acm(query, year_start, year_end, max_records=9999):
+def search_acm(query, year_start, year_end):
     import requests
     from bs4 import BeautifulSoup
     results, page = [], 0
@@ -250,13 +250,13 @@ def search_acm(query, year_start, year_end, max_records=9999):
     return results, None
 
 
-def search_scholar(query, year_start, year_end, max_records):
+def search_scholar(query, year_start, year_end):
     from scholarly import scholarly
     results = []
     try:
         gen = scholarly.search_pubs(query)
         count = 0
-        while count < 20:  # Google Scholar blocks >20 per query
+        while count < 20:  # Scholar bot limit
             try:
                 pub = next(gen)
                 bib = pub.get("bib",{})
@@ -529,7 +529,7 @@ if run_clicked:
                 if use_springer:
                     status_text.text(f"Springer → {q['id']}...")
                     # FIXED: pass springer_oa (not springer_meta)
-                    results, err = search_springer(q["springer"], springer_oa, year_start, year_end, max_per_db)
+                    results, err = search_springer(q["springer"], springer_oa, year_start, year_end)
                     if err: log(f"Springer `{q['id']}`: {err}", "err")
                     else:   log(f"Springer `{q['id']}` → {len(results)} results", "ok")
                     for p in results: p.update({"dimension": dimension, "query_id": q["id"]})
@@ -540,7 +540,7 @@ if run_clicked:
 
                 if use_elsevier:
                     status_text.text(f"Elsevier → {q['id']}...")
-                    results, err = search_elsevier(q["elsevier"], elsevier_key, year_start, year_end, max_per_db)
+                    results, err = search_elsevier(q["elsevier"], elsevier_key, year_start, year_end)
                     if err: log(f"Elsevier `{q['id']}`: {err}", "err")
                     else:   log(f"Elsevier `{q['id']}` → {len(results)} results", "ok")
                     for p in results: p.update({"dimension": dimension, "query_id": q["id"]})
@@ -551,7 +551,7 @@ if run_clicked:
 
                 if use_acm:
                     status_text.text(f"ACM → {q['id']}...")
-                    results, err = search_acm(q["acm"], year_start, year_end, max_per_db)
+                    results, err = search_acm(q["acm"], year_start, year_end)
                     if err: log(f"ACM `{q['id']}`: {err}", "err")
                     else:   log(f"ACM `{q['id']}` → {len(results)} results", "ok")
                     for p in results: p.update({"dimension": dimension, "query_id": q["id"]})
@@ -562,7 +562,7 @@ if run_clicked:
 
                 if use_scholar:
                     status_text.text(f"Google Scholar → {q['id']}...")
-                    results, err = search_scholar(q["generic"], year_start, year_end, max_per_db)
+                    results, err = search_scholar(q["generic"], year_start, year_end)
                     if err: log(f"Scholar `{q['id']}`: {err}", "err")
                     else:   log(f"Scholar `{q['id']}` → {len(results)} results", "ok")
                     for p in results: p.update({"dimension": dimension, "query_id": q["id"]})
