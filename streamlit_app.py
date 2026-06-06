@@ -57,7 +57,7 @@ def parse_scopus_csv(content, query_id):
                 "year":     str(row.get("Year","")).strip(),
                 "source":   row.get("Source title","").strip(),
                 "doi":      row.get("DOI","").strip(),
-                "abstract": row.get("Abstract","").strip(),
+                "abstract": "",
                 "url":      row.get("Link","").strip(),
                 "type":     row.get("Document Type","").strip(),
                 "database": "Elsevier/Scopus", "query_id": query_id,
@@ -78,7 +78,7 @@ def parse_scopus_pop_csv(content, query_id):
                 "year":     str(row.get("Year","")).strip(),
                 "source":   row.get("Source","").strip(),
                 "doi":      row.get("DOI","").strip(),
-                "abstract": row.get("Abstract","").strip(),
+                "abstract": "",
                 "url":      row.get("ArticleURL","").strip(),
                 "type":     row.get("Type","Article").strip(),
                 "database": "Elsevier/Scopus", "query_id": query_id,
@@ -99,7 +99,7 @@ def parse_scholar_csv(content, query_id):
                 "year":     str(row.get("Year","")).strip(),
                 "source":   row.get("Source","").strip(),
                 "doi":      row.get("DOI","").strip(),
-                "abstract": row.get("Abstract","").strip(),
+                "abstract": "",
                 "url":      row.get("ArticleURL","").strip() or row.get("URL","").strip(),
                 "type":     row.get("Type","article").strip(),
                 "database": "Google Scholar", "query_id": query_id,
@@ -124,7 +124,7 @@ def parse_bib(content, query_id):
             "year":     get_field("year", entry),
             "source":   get_field("booktitle", entry) or get_field("journal", entry),
             "doi":      get_field("doi", entry),
-            "abstract": get_field("abstract", entry)[:300],
+            "abstract": "",
             "url":      get_field("url", entry),
             "type":     "Conference Paper" if "inproceedings" in entry[:30].lower() else "Article",
             "database": "ACM", "query_id": query_id,
@@ -228,7 +228,7 @@ def build_excel(papers, stats, dupe_list):
                 p.get("source","")[:60],
                 p.get("doi",""),
                 p.get("url","")[:100],
-                p.get("abstract","")[:300],
+                p.get("abstract",""),
             ]
             for ci,val in enumerate(vals,1):
                 c=ws.cell(row=ri,column=ci,value=val)
@@ -518,14 +518,14 @@ if uploaded:
                     headers={"User-Agent":"SystematicReview/1.0"}, timeout=8)
                 if r.ok:
                     abstract = r.json().get("message",{}).get("abstract","")
-                    if abstract: return _re.sub(r"<[^>]+>","",abstract).strip()[:600]
+                    if abstract: return _re.sub(r"<[^>]+>","",abstract).strip()
             except: pass
             try:
                 r2 = _req.get(f"https://api.semanticscholar.org/graph/v1/paper/{doi}",
                     params={"fields":"abstract"}, timeout=8)
                 if r2.ok:
                     abstract = r2.json().get("abstract","")
-                    if abstract: return abstract[:600]
+                    if abstract: return abstract
             except: pass
             return ""
 
@@ -542,7 +542,7 @@ if uploaded:
                     el = soup.select_one(sel)
                     if el:
                         text = el.get("content","") if el.name=="meta" else el.get_text(" ",strip=True)
-                        if len(text) > 50: return text[:600]
+                        if len(text) > 50: return text
             except: pass
             return ""
 
