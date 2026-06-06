@@ -439,7 +439,19 @@ if uploaded:
         all_papers.extend(papers)
 
     unique, dupe_list = deduplicate(all_papers)
-    stats.update({"total_raw":len(all_papers),"duplicates":len(dupe_list),"after_dedup":len(unique)})
+
+    # Filter non-English papers (title has >30% non-ASCII = likely not English)
+    def likely_english(p):
+        text = (p.get("title","") + " " + p.get("source",""))
+        if not text.strip(): return True
+        non_ascii = sum(1 for c in text if ord(c) > 127)
+        return (non_ascii / max(len(text),1)) < 0.25
+
+    non_english = [p for p in unique if not likely_english(p)]
+    unique = [p for p in unique if likely_english(p)]
+
+    stats.update({"total_raw":len(all_papers),"duplicates":len(dupe_list),
+                  "after_dedup":len(unique),"non_english":len(non_english)})
     missing_year = [p for p in unique if not str(p.get("year","")).strip().isdigit() or not is_valid_year(p.get("year",""))]
     missing_doi  = [p for p in unique if not p.get("doi","").strip()]
 
@@ -481,40 +493,60 @@ if uploaded:
 
     if generate_clicked:
         # Store result in session state so download doesn't re-trigger
+        def is_english(text):
+            """Quick check — if >30% non-ASCII chars, likely not English"""
+            if not text: return True
+            non_ascii = sum(1 for c in text if ord(c) > 127)
+            return (non_ascii / len(text)) < 0.3
+
         def fetch_by_doi(doi):
+            """Try CrossRef then Semantic Scholar. One attempt each, no retry."""
             if not doi: return ""
             try:
                 r = _req.get(f"https://api.crossref.org/works/{doi}",
-                    headers={"User-Agent":"SystematicReview/1.0"}, timeout=8)
+                    headers={"User-Agent":"SystematicReview/1.0"}, timeout=6)
                 if r.ok:
                     abstract = r.json().get("message",{}).get("abstract","")
-                    if abstract: return _re.sub(r"<[^>]+>","",abstract).strip()
+                    if abstract:
+                        abstract = _re.sub(r"<[^>]+>","",abstract).strip()
+                        if is_english(abstract): return abstract
             except: pass
             try:
                 r2 = _req.get(f"https://api.semanticscholar.org/graph/v1/paper/{doi}",
-                    params={"fields":"abstract"}, timeout=8)
+                    params={"fields":"abstract"}, timeout=6)
                 if r2.ok:
                     abstract = r2.json().get("abstract","")
-                    if abstract: return abstract
+                    if abstract and is_english(abstract): return abstract
             except: pass
             return ""
 
         def fetch_by_url(url):
+            """Scrape abstract from URL page. One attempt, no retry."""
             from bs4 import BeautifulSoup
             if not url: return ""
+            # Build doi.org URL if it looks like a DOI
             try:
-                r = _req.get(url, headers={"User-Agent":"Mozilla/5.0"}, timeout=10)
+                r = _req.get(url, headers={"User-Agent":"Mozilla/5.0 (compatible; AcademicResearch/1.0)"},
+                    timeout=8, allow_redirects=True)
                 if not r.ok: return ""
                 soup = BeautifulSoup(r.text,"html.parser")
                 for sel in ["div.abstract","section.Abstract","div#abstract",
                             "div.abstractSection","p.abstract","#Abs1-content",
-                            "div[class*=abstract]","meta[name=description]"]:
+                            "div[class*=abstract]","section[class*=abstract]",
+                            "meta[name=description]","meta[property='og:description']"]:
                     el = soup.select_one(sel)
                     if el:
                         text = el.get("content","") if el.name=="meta" else el.get_text(" ",strip=True)
-                        if len(text) > 50: return text
+                        if len(text) > 80 and is_english(text): return text
             except: pass
             return ""
+
+        def build_doi_url(doi):
+            """Convert DOI to doi.org URL"""
+            if not doi: return ""
+            doi = doi.strip()
+            if doi.startswith("http"): return doi
+            return f"https://doi.org/{doi}"
 
         if fetch_toggle and need_abstract:
             prog  = st.progress(0)
@@ -541,11 +573,18 @@ if uploaded:
 
                 abstract = ""
                 if doi:
+                    # Try DOI-based APIs first
                     abstract = fetch_by_doi(doi)
-                    _time.sleep(0.3)
-                if not abstract and url:
+                    _time.sleep(0.25)
+                    if not abstract:
+                        # Try doi.org URL as fallback
+                        doi_url = build_doi_url(doi)
+                        abstract = fetch_by_url(doi_url)
+                        _time.sleep(0.25)
+                if not abstract and url and url != build_doi_url(doi):
+                    # Try original URL only if different from doi.org
                     abstract = fetch_by_url(url)
-                    _time.sleep(0.4)
+                    _time.sleep(0.25)
                 if abstract:
                     p["abstract"] = abstract; found += 1
 
