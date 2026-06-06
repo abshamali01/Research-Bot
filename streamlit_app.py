@@ -210,9 +210,10 @@ def build_excel(papers, stats, dupe_list):
     DIM_CLR = {"D1":"D6E4F0","D2":"D5E8D4","D3":"FFF2CC"}
     PH_CLR  = {"Identification":"D6E4F0","Screening":"D5E8D4","Eligibility":"FFF2CC","Included":"FCE4D6"}
 
-    main_papers  = [p for p in papers if is_valid_year(p.get("year","")) and p.get("doi","").strip()]
+    # ALL papers go to screening — flag issues but don't exclude
+    main_papers  = papers  # everyone screened
     missing_year = [p for p in papers if not str(p.get("year","")).strip().isdigit() or not is_valid_year(p.get("year",""))]
-    missing_doi  = [p for p in papers if not p.get("doi","").strip() and is_valid_year(p.get("year",""))]
+    missing_doi  = [p for p in papers if not p.get("doi","").strip()]
 
     wb = openpyxl.Workbook()
 
@@ -438,9 +439,9 @@ if uploaded:
     unique, dupe_list = deduplicate(all_papers)
     stats.update({"total_raw": len(all_papers), "duplicates": len(dupe_list), "after_dedup": len(unique)})
 
-    main_papers  = [p for p in unique if is_valid_year(p.get("year","")) and p.get("doi","").strip()]
+    main_papers  = unique  # ALL papers go to screening
     missing_year = [p for p in unique if not str(p.get("year","")).strip().isdigit() or not is_valid_year(p.get("year",""))]
-    missing_doi  = [p for p in unique if not p.get("doi","").strip() and is_valid_year(p.get("year",""))]
+    missing_doi  = [p for p in unique if not p.get("doi","").strip()]
 
     st.markdown("### Step 2 - Files Parsed")
     for fname, db, qid, n in parse_log:
