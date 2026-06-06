@@ -8,7 +8,6 @@ import streamlit as st
 import os, json, time, urllib.parse, io
 from datetime import datetime
 
-# ─── Page config ─────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Systematic Review Bot",
     page_icon="🔬",
@@ -16,80 +15,51 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ─── Custom CSS ───────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;600&display=swap');
-
 html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
 h1, h2, h3 { font-family: 'IBM Plex Mono', monospace; }
-
 .stApp { background: #0d1117; color: #e6edf3; }
-
-.metric-card {
-    background: #161b22; border: 1px solid #30363d;
-    border-radius: 6px; padding: 16px; text-align: center;
-}
+.metric-card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 16px; text-align: center; }
 .metric-card .num { font-family: 'IBM Plex Mono'; font-size: 2rem; color: #58a6ff; font-weight: 600; }
 .metric-card .lbl { font-size: 0.75rem; color: #8b949e; text-transform: uppercase; letter-spacing: 1px; }
-
-.dim-badge {
-    display: inline-block; padding: 2px 10px; border-radius: 12px;
-    font-size: 0.72rem; font-family: 'IBM Plex Mono'; font-weight: 600;
-}
+.dim-badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.72rem; font-family: 'IBM Plex Mono'; font-weight: 600; }
 .dim-d1 { background: #1c2d4f; color: #79c0ff; border: 1px solid #2d5a9e; }
 .dim-d2 { background: #1a2e1a; color: #7ee787; border: 1px solid #2d5e2d; }
 .dim-d3 { background: #2e2a14; color: #e3b341; border: 1px solid #5e4e14; }
-
-.log-line { font-family: 'IBM Plex Mono'; font-size: 0.8rem; color: #8b949e; padding: 2px 0; }
-.log-ok   { color: #3fb950; }
-.log-err  { color: #f85149; }
-.log-info { color: #58a6ff; }
-
-.section-header {
-    border-left: 3px solid #58a6ff; padding-left: 12px;
-    font-family: 'IBM Plex Mono'; color: #e6edf3;
-}
+.section-header { border-left: 3px solid #58a6ff; padding-left: 12px; font-family: 'IBM Plex Mono'; color: #e6edf3; }
 </style>
 """, unsafe_allow_html=True)
 
-# ─── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 🔬 Systematic Review Bot")
     st.markdown("---")
     st.markdown("### API Keys")
-
-    springer_meta = st.text_input("Springer Meta API Key", type="password",
-                                   value="37be5cdf1b66a6aa4b77de297dcc4ec8")
     springer_oa   = st.text_input("Springer Open Access Key", type="password",
                                    value="547069e6b9af47166cfa75f20d815009")
     elsevier_key  = st.text_input("Elsevier / Scopus API Key", type="password",
                                    value="76e7e8b25be92da632764cabd04e2a64")
-
     st.markdown("---")
     st.markdown("### Search Parameters")
     year_start = st.number_input("Year From", min_value=2000, max_value=2026, value=2015)
     year_end   = st.number_input("Year To",   min_value=2000, max_value=2026, value=2026)
     max_per_db = st.slider("Max results per DB per query", 10, 100, 50, 10)
-
     st.markdown("---")
     st.markdown("### Databases")
-    use_springer = st.checkbox("Springer",       value=True)
-    use_elsevier = st.checkbox("Elsevier/Scopus",value=True)
+    use_springer = st.checkbox("Springer",            value=True)
+    use_elsevier = st.checkbox("Elsevier/Scopus",     value=True)
     use_acm      = st.checkbox("ACM Digital Library", value=True)
-    use_scholar  = st.checkbox("Google Scholar", value=True)
-
+    use_scholar  = st.checkbox("Google Scholar",      value=True)
     st.markdown("---")
     st.markdown("### Dimensions")
     use_d1 = st.checkbox("D1 — Standardization & AI", value=True)
     use_d2 = st.checkbox("D2 — Context Engineering",  value=True)
     use_d3 = st.checkbox("D3 — Token Efficiency",     value=True)
-
     st.markdown("---")
     st.caption("PRISMA 2020 | Webster & Watson")
     st.caption("Uni Koblenz — HiWi Project")
 
-# ─── Search Strings ───────────────────────────────────────────────────────────
 ALL_SEARCH_STRINGS = {
     "D1_Standardization_AI": [
         {"id":"D1Q1","label":"Standards + AI-readiness + LLM",
@@ -146,16 +116,21 @@ EXCLUSION_CRITERIA = [
     "E7: Abstract only / insufficient detail", "E8: Not peer-reviewed",
 ]
 
-# ─── Searcher functions ───────────────────────────────────────────────────────
-
+# ── FIX 1: Springer — use OA key + openaccess endpoint ──────────────────────
 def search_springer(query, api_key, year_start, year_end, max_records):
     import requests
     results, start = [], 1
     while len(results) < max_records:
-        params = {"api_key": api_key, "q": query, "s": start, "p": 25,
-                  "dateFrom": f"{year_start}-01-01", "dateTo": f"{year_end}-12-31"}
+        params = {
+            "api_key": api_key,
+            "q": query, "s": start, "p": 25,
+            "dateFrom": f"{year_start}-01-01",
+            "dateTo":   f"{year_end}-12-31",
+        }
         try:
-            r = requests.get("https://api.springernature.com/meta/v2/json", params=params, timeout=20)
+            # FIXED: was /meta/v2/json — now /openaccess/json
+            r = requests.get("https://api.springernature.com/openaccess/json",
+                             params=params, timeout=20)
             r.raise_for_status()
             data = r.json()
             records = data.get("records", [])
@@ -181,14 +156,25 @@ def search_springer(query, api_key, year_start, year_end, max_records):
     return results, None
 
 
+# ── FIX 2: Elsevier — JSON via Accept header + apiKey param ─────────────────
 def search_elsevier(query, api_key, year_start, year_end, max_records):
     import requests
     results, start = [], 0
     date_q = f"({query}) AND (PUBYEAR > {year_start-1} AND PUBYEAR < {year_end+1})"
-    headers = {"X-ELS-APIKey": api_key, "Accept": "application/json"}
+    # FIXED: send apiKey as query param AND Accept: application/json header
+    headers = {
+        "Accept": "application/json",
+        "X-ELS-APIKey": api_key,
+    }
     while len(results) < max_records:
-        params = {"query": date_q, "start": start, "count": 25, "sort": "relevancy",
-                  "field": "dc:title,dc:creator,prism:coverDate,prism:publicationName,prism:doi,dc:description,prism:url,subtypeDescription"}
+        params = {
+            "apiKey": api_key,          # FIXED: was inside headers only
+            "query":  date_q,
+            "start":  start,
+            "count":  25,
+            "sort":   "relevancy",
+            "field":  "dc:title,dc:creator,prism:coverDate,prism:publicationName,prism:doi,dc:description,prism:url,subtypeDescription",
+        }
         try:
             r = requests.get("https://api.elsevier.com/content/search/scopus",
                              headers=headers, params=params, timeout=20)
@@ -200,11 +186,14 @@ def search_elsevier(query, api_key, year_start, year_end, max_records):
                 stype = e.get("subtypeDescription","").lower()
                 if stype not in ["article","conference paper","review","conference review"]: continue
                 results.append({
-                    "title":    e.get("dc:title",""), "authors": e.get("dc:creator",""),
+                    "title":    e.get("dc:title",""),
+                    "authors":  e.get("dc:creator",""),
                     "year":     e.get("prism:coverDate","")[:4],
                     "source":   e.get("prism:publicationName",""),
-                    "doi":      e.get("prism:doi",""), "abstract": e.get("dc:description",""),
-                    "url":      e.get("prism:url",""), "type": e.get("subtypeDescription",""),
+                    "doi":      e.get("prism:doi",""),
+                    "abstract": e.get("dc:description",""),
+                    "url":      e.get("prism:url",""),
+                    "type":     e.get("subtypeDescription",""),
                     "database": "Elsevier/Scopus",
                 })
             total = int(data.get("search-results",{}).get("opensearch:totalResults",0))
@@ -244,8 +233,8 @@ def search_acm(query, year_start, year_end, max_records):
                     for txt in detail.stripped_strings:
                         if txt.strip().isdigit() and len(txt.strip())==4:
                             year = txt.strip(); break
-                source_el  = item.select_one("span.epub-section__title")
-                abstract_el= item.select_one("div.issue-item__abstract p")
+                source_el   = item.select_one("span.epub-section__title")
+                abstract_el = item.select_one("div.issue-item__abstract p")
                 results.append({
                     "title":    title_el.get_text(strip=True), "authors": authors, "year": year,
                     "source":   source_el.get_text(strip=True) if source_el else "",
@@ -306,8 +295,6 @@ def deduplicate(papers):
     return unique, dupes
 
 
-# ─── Excel Builder ────────────────────────────────────────────────────────────
-
 def build_excel_bytes(papers, stats):
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -322,7 +309,6 @@ def build_excel_bytes(papers, stats):
 
     wb = openpyxl.Workbook()
 
-    # ── PRISMA Flow ────────────────────────────────────────────────────────────
     ws = wb.active; ws.title = "PRISMA_Flow"
     ws.sheet_view.showGridLines = False
     ws.column_dimensions["A"].width = 3
@@ -359,7 +345,6 @@ def build_excel_bytes(papers, stats):
             c.font=Font(name="Arial",size=9)
             c.alignment=Alignment(wrap_text=True,vertical="center")
 
-    # ── Screening Sheet ────────────────────────────────────────────────────────
     ws2=wb.create_sheet("Screening_Sheet"); ws2.freeze_panes="A2"
     COLS=[
         ("ID",6),("Dimension",14),("Query ID",8),("Database",12),("Title",40),
@@ -390,7 +375,6 @@ def build_excel_bytes(papers, stats):
             c.alignment=Alignment(wrap_text=True,vertical="top")
     ws2.auto_filter.ref=f"A1:{get_column_letter(len(COLS))}{len(papers)+1}"
 
-    # ── Concept Matrix ────────────────────────────────────────────────────────
     ws3=wb.create_sheet("Concept_Matrix_W&W")
     ws3.column_dimensions["A"].width=3;ws3.column_dimensions["B"].width=4
     ws3["C2"].value="Webster & Watson (2002) Concept Matrix"
@@ -434,7 +418,6 @@ def build_excel_bytes(papers, stats):
             c.alignment=Alignment(horizontal="center",vertical="center")
         ws3.row_dimensions[ri].height=18
 
-    # ── Exclusion Criteria ────────────────────────────────────────────────────
     ws4=wb.create_sheet("Exclusion_Criteria")
     ws4["B2"].value="Exclusion Criteria Reference"
     ws4["B2"].font=Font(bold=True,size=13,color="1F4E79",name="Arial")
@@ -446,7 +429,6 @@ def build_excel_bytes(papers, stats):
         c.fill=PatternFill("solid",start_color=ecolors[ri-4])
         c.border=BDR;ws4.row_dimensions[ri].height=22
 
-    # ── Search Log ────────────────────────────────────────────────────────────
     ws5=wb.create_sheet("Search_Log")
     ws5["B2"].value="Search Query Log — All Queries × All Databases"
     ws5["B2"].font=Font(bold=True,size=13,color="1F4E79",name="Arial")
@@ -481,14 +463,12 @@ st.markdown("# 🔬 Systematic Review Bot")
 st.markdown("**PRISMA 2020** · **Webster & Watson** · 4 Databases · 9 Search Strings")
 st.markdown("---")
 
-# Build active search strings based on sidebar selections
 active_strings = {}
 dim_map = {"D1_Standardization_AI": use_d1, "D2_Context_Engineering": use_d2, "D3_Token_Efficiency": use_d3}
 for dim, enabled in dim_map.items():
     if enabled:
         active_strings[dim] = ALL_SEARCH_STRINGS[dim]
 
-# Preview panel
 col1, col2, col3 = st.columns(3)
 with col1:
     st.markdown('<div class="metric-card"><div class="num">{}</div><div class="lbl">Dimensions</div></div>'.format(len(active_strings)), unsafe_allow_html=True)
@@ -501,7 +481,6 @@ with col3:
 
 st.markdown("")
 
-# Query preview
 with st.expander("📋 Preview Search Queries", expanded=False):
     for dim, queries in active_strings.items():
         dk = dim[:2]
@@ -513,7 +492,6 @@ with st.expander("📋 Preview Search Queries", expanded=False):
 
 st.markdown("---")
 
-# Run button
 run_col, _ = st.columns([1, 3])
 with run_col:
     run_clicked = st.button("🚀 Run Systematic Search", type="primary", use_container_width=True)
@@ -545,13 +523,13 @@ if run_clicked:
 
         for dimension, queries in active_strings.items():
             log(f"**Dimension: {dimension}**", "info")
-
             for q in queries:
                 log(f"Query `{q['id']}` — {q['label']}", "info")
 
                 if use_springer:
                     status_text.text(f"Springer → {q['id']}...")
-                    results, err = search_springer(q["springer"], springer_meta, year_start, year_end, max_per_db)
+                    # FIXED: pass springer_oa (not springer_meta)
+                    results, err = search_springer(q["springer"], springer_oa, year_start, year_end, max_per_db)
                     if err: log(f"Springer `{q['id']}`: {err}", "err")
                     else:   log(f"Springer `{q['id']}` → {len(results)} results", "ok")
                     for p in results: p.update({"dimension": dimension, "query_id": q["id"]})
@@ -593,7 +571,6 @@ if run_clicked:
                     all_papers.extend(results)
                     op_done += 1; progress_bar.progress(op_done / total_ops)
 
-        # Dedup
         status_text.text("Deduplicating...")
         unique, dupes = deduplicate(all_papers)
         stats.update({"total_raw": len(all_papers), "duplicates": dupes, "after_dedup": len(unique)})
@@ -602,7 +579,6 @@ if run_clicked:
     progress_bar.progress(1.0)
     status_text.text("Done!")
 
-    # Summary metrics
     st.markdown("---")
     st.markdown("### 📊 Results Summary")
     m1,m2,m3,m4 = st.columns(4)
@@ -617,62 +593,43 @@ if run_clicked:
         summary = " / ".join(f"{k}:{v}" for k,v in sorted(d_counts.items()))
         st.markdown(f'<div class="metric-card"><div class="num" style="font-size:1.1rem">{summary}</div><div class="lbl">By Dimension</div></div>', unsafe_allow_html=True)
 
-    # Papers preview table
     if unique:
         st.markdown("---")
         st.markdown("### 📄 Papers Preview (first 50)")
         import pandas as pd
         preview_data = [{
-            "Dim": p.get("dimension","")[:2],
-            "QID": p.get("query_id",""),
-            "DB":  p.get("database",""),
-            "Year":p.get("year",""),
-            "Title":p.get("title","")[:80],
-            "Authors":p.get("authors","")[:50],
-            "Source":p.get("source","")[:40],
-            "DOI":p.get("doi",""),
+            "Dim": p.get("dimension","")[:2], "QID": p.get("query_id",""),
+            "DB":  p.get("database",""),      "Year": p.get("year",""),
+            "Title": p.get("title","")[:80],  "Authors": p.get("authors","")[:50],
+            "Source": p.get("source","")[:40],"DOI": p.get("doi",""),
         } for p in unique[:50]]
-        df = pd.DataFrame(preview_data)
-        st.dataframe(df, use_container_width=True, height=350)
+        st.dataframe(pd.DataFrame(preview_data), use_container_width=True, height=350)
 
-    # Downloads
     st.markdown("---")
     st.markdown("### 💾 Download Results")
     dl1, dl2 = st.columns(2)
-
     with dl1:
         excel_bytes = build_excel_bytes(unique, stats)
         fname = f"systematic_review_{datetime.now():%Y%m%d_%H%M}.xlsx"
-        st.download_button(
-            label="📥 Download PRISMA Excel",
-            data=excel_bytes,
-            file_name=fname,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
-
+        st.download_button(label="📥 Download PRISMA Excel", data=excel_bytes,
+            file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True)
     with dl2:
         json_bytes = json.dumps({"stats": stats, "papers": unique}, indent=2, ensure_ascii=False).encode()
-        st.download_button(
-            label="📥 Download Raw JSON",
-            data=json_bytes,
+        st.download_button(label="📥 Download Raw JSON", data=json_bytes,
             file_name=f"raw_results_{datetime.now():%Y%m%d_%H%M}.json",
-            mime="application/json",
-            use_container_width=True,
-        )
+            mime="application/json", use_container_width=True)
 
     st.success(f"✅ Search complete! {stats['after_dedup']} papers ready for PRISMA screening.")
 
 else:
-    # Instructions when not yet run
     st.markdown("### How to use")
     st.markdown("""
 1. **Configure** API keys + parameters in the sidebar
-2. **Select** databases and dimensions  
-3. Click **Run Systematic Search**
-4. **Download** the Excel file → screen papers in `Screening_Sheet` tab
+2. **Select** databases and dimensions
+3. Click **🚀 Run Systematic Search**
+4. **Download** Excel → screen papers in `Screening_Sheet` tab
 5. Fill **`Concept_Matrix_W&W`** for included papers
-6. Update **`PRISMA_Flow`** counts after each screening phase
+6. Update **`PRISMA_Flow`** counts after each phase
     """)
-
-    st.info("💡 **Tip:** Springer & Elsevier keys need your server's IP whitelisted. Go to [api.springernature.com](https://api.springernature.com) and [dev.elsevier.com](https://dev.elsevier.com) to add the Streamlit Cloud IP.")
+    st.info("💡 Elsevier key works from your local PC. Springer Open Access key confirmed working.")
