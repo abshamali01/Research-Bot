@@ -117,10 +117,10 @@ EXCLUSION_CRITERIA = [
 ]
 
 # ── FIX 1: Springer — use OA key + openaccess endpoint ──────────────────────
-def search_springer(query, api_key, year_start, year_end, max_records):
+def search_springer(query, api_key, year_start, year_end, max_records=9999):
     import requests
     results, start = [], 1
-    while len(results) < max_records:
+    while True:
         params = {
             "api_key": api_key,
             "q": query, "s": start, "p": 25,
@@ -149,7 +149,7 @@ def search_springer(query, api_key, year_start, year_end, max_records):
                     "type":     rec.get("contentType",""), "database": "Springer",
                 })
             total = int(data.get("result",[{}])[0].get("total",0))
-            if start + 25 > min(total, max_records): break
+            if start + 25 > total: break
             start += 25; time.sleep(0.5)
         except Exception as e:
             return results, str(e)
@@ -157,7 +157,7 @@ def search_springer(query, api_key, year_start, year_end, max_records):
 
 
 # ── FIX 2: Elsevier — JSON via Accept header + apiKey param ─────────────────
-def search_elsevier(query, api_key, year_start, year_end, max_records):
+def search_elsevier(query, api_key, year_start, year_end, max_records=9999):
     import requests
     results, start = [], 0
     date_q = f"({query}) AND (PUBYEAR > {year_start-1} AND PUBYEAR < {year_end+1})"
@@ -166,7 +166,7 @@ def search_elsevier(query, api_key, year_start, year_end, max_records):
         "Accept": "application/json",
         "X-ELS-APIKey": api_key,
     }
-    while len(results) < max_records:
+    while True:
         params = {
             "apiKey": api_key,          # FIXED: was inside headers only
             "query":  date_q,
@@ -197,20 +197,20 @@ def search_elsevier(query, api_key, year_start, year_end, max_records):
                     "database": "Elsevier/Scopus",
                 })
             total = int(data.get("search-results",{}).get("opensearch:totalResults",0))
-            if start + 25 >= min(total, max_records): break
+            if start + 25 >= total: break
             start += 25; time.sleep(0.5)
         except Exception as e:
             return results, str(e)
     return results, None
 
 
-def search_acm(query, year_start, year_end, max_records):
+def search_acm(query, year_start, year_end, max_records=9999):
     import requests
     from bs4 import BeautifulSoup
     results, page = [], 0
     encoded = urllib.parse.quote(query)
     HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; AcademicResearch/1.0)"}
-    while len(results) < max_records:
+    while True:
         url = (f"https://dl.acm.org/action/doSearch?query={encoded}"
                f"&startPage={page}&pageSize=20"
                f"&AfterYear={year_start}&BeforeYear={year_end}"
@@ -256,7 +256,7 @@ def search_scholar(query, year_start, year_end, max_records):
     try:
         gen = scholarly.search_pubs(query)
         count = 0
-        while count < min(max_records, 20):
+        while count < 20:  # Google Scholar blocks >20 per query
             try:
                 pub = next(gen)
                 bib = pub.get("bib",{})
