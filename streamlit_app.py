@@ -162,16 +162,31 @@ def detect_csv_type(content, fname=""):
     if "scopus.com"   in second: return "scopus_pop"
     return "scholar"
 
+def paper_score(p):
+    """Score paper by data completeness — higher = keep this one"""
+    score = 0
+    if p.get("abstract","").strip(): score += 3
+    if p.get("doi","").strip():      score += 2
+    if p.get("url","").strip():      score += 1
+    if p.get("authors","").strip():  score += 1
+    return score
+
 def deduplicate(papers):
+    # Sort by score descending so best version comes first
+    sorted_papers = sorted(papers, key=paper_score, reverse=True)
     seen_doi, seen_title, unique, dupe_list = set(), set(), [], []
-    for p in papers:
+    for p in sorted_papers:
         doi   = p.get("doi","").strip().lower()
-        title = p.get("title","").strip().lower()[:80]
-        key   = doi if doi else title
-        if key and key in seen_doi:        dupe_list.append(p); continue
-        if key:                             seen_doi.add(key)
-        if title and title in seen_title:   dupe_list.append(p); continue
-        if title:                           seen_title.add(title)
+        title = p.get("title","").strip().lower()[:120]
+        if doi:
+            if doi in seen_doi:
+                dupe_list.append(p); continue
+            seen_doi.add(doi)
+        else:
+            if title and title in seen_title:
+                dupe_list.append(p); continue
+        if title:
+            seen_title.add(title)
         unique.append(p)
     return unique, dupe_list
 
