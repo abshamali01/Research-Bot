@@ -1090,11 +1090,41 @@ with tab2:
                 if alt_term not in expanded: expanded.append(alt_term)
         return expanded
 
-    def paper_matches(paper, keywords):
-        """Returns (matched: bool, matched_terms: list). Match if title OR abstract contains ANY keyword."""
-        text = ((paper.get("title","") or "") + " " + (paper.get("abstract","") or "")).lower()
-        hits = [kw for kw in keywords if kw in text]
-        return bool(hits), hits
+    def screen_paper(title, abstract, keywords):
+        """
+        Returns (status, reason, note) based on what data is available.
+
+        Rules:
+        - Title + Abstract both present:
+            → keyword in either → Include
+            → no keyword in either → Exclude E4
+        - Title only (abstract empty):
+            → keyword in title → Include
+            → no keyword in title → Pending (can't confirm exclude without abstract)
+        - No title and no abstract:
+            → Pending (nothing to screen)
+        """
+        has_title    = bool(title.strip())
+        has_abstract = bool(abstract.strip())
+
+        title_hits    = [kw for kw in keywords if kw in title.lower()]    if has_title    else []
+        abstract_hits = [kw for kw in keywords if kw in abstract.lower()] if has_abstract else []
+        all_hits = list(set(title_hits + abstract_hits))
+
+        if has_title and has_abstract:
+            if all_hits:
+                return "Include", "", f"Match in title+abstract: {', '.join(all_hits[:5])}"
+            else:
+                return "Exclude", "E4", "No keyword match in title or abstract"
+
+        elif has_title and not has_abstract:
+            if title_hits:
+                return "Include", "", f"Match in title: {', '.join(title_hits[:5])}"
+            else:
+                return "Pending", "", "No title keyword match — abstract missing, check manually"
+
+        else:
+            return "Pending", "", "No title or abstract — check manually"
 
     col_l, col_r = st.columns([1,1])
     with col_l:
@@ -1134,7 +1164,7 @@ with tab2:
                 EXC = PatternFill("solid", start_color="FFE0E0")
 
                 wb = openpyxl.load_workbook(io.BytesIO(screener_xl.read()))
-                inc_tot = exc_tot = skip_tot = 0
+                inc_tot = exc_tot = skip_tot = pend_tot = 0
 
                 for sname in wb.sheetnames:
                     if "Screening_Sheet" not in sname: continue
@@ -1156,27 +1186,26 @@ with tab2:
                             skip_tot += 1
                             prog.progress(min((ri-1)/max(total,1),1.0)); continue
 
-                        paper = {
-                            "title":    str(ws.cell(ri, tc).value or ""),
-                            "abstract": str(ws.cell(ri, ac).value or "") if ac else "",
-                        }
-                        matched, terms = paper_matches(paper, keywords)
+                        title_val    = str(ws.cell(ri, tc).value or "")
+                        abstract_val = str(ws.cell(ri, ac).value or "") if ac else ""
+                        status_new, reason_new, note_new = screen_paper(title_val, abstract_val, keywords)
 
-                        if matched:
-                            ws.cell(ri, sc).value = "Include"
-                            if nc:
-                                ex = str(ws.cell(ri, nc).value or "")
-                                ws.cell(ri, nc).value = (ex+" | " if ex else "") + f"Match: {', '.join(terms[:5])}"
+                        ws.cell(ri, sc).value = status_new
+                        if rc and reason_new: ws.cell(ri, rc).value = reason_new
+                        if nc and note_new:
+                            ex = str(ws.cell(ri, nc).value or "")
+                            ws.cell(ri, nc).value = (ex+" | " if ex else "") + note_new
+
+                        if status_new == "Include":
                             for ci in range(1, ws.max_column+1): ws.cell(ri, ci).fill = INC
                             inc_tot += 1
-                        else:
-                            ws.cell(ri, sc).value = "Exclude"
-                            if rc: ws.cell(ri, rc).value = "E4"
-                            if nc:
-                                ex = str(ws.cell(ri, nc).value or "")
-                                ws.cell(ri, nc).value = (ex+" | " if ex else "") + "No keyword match"
+                        elif status_new == "Exclude":
                             for ci in range(1, ws.max_column+1): ws.cell(ri, ci).fill = EXC
                             exc_tot += 1
+                        else:  # Pending
+                            PEND = PatternFill("solid", start_color="FFF8DC")
+                            for ci in range(1, ws.max_column+1): ws.cell(ri, ci).fill = PEND
+                            pend_tot += 1
 
                         prog.progress(min((ri-1)/max(total,1),1.0))
                         stat.text(f"Row {ri-1}/{total}...")
@@ -1184,12 +1213,13 @@ with tab2:
                     prog.progress(1.0); stat.empty()
 
                 st.markdown("---")
-                c1,c2,c3,c4 = st.columns(4)
+                c1,c2,c3,c4,c5 = st.columns(5)
                 with c1: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#3fb950">{inc_tot}</div><div class="stat-lbl">✅ Included</div></div>', unsafe_allow_html=True)
                 with c2: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#f85149">{exc_tot}</div><div class="stat-lbl">❌ Excluded E4</div></div>', unsafe_allow_html=True)
-                with c3: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#8b949e">{skip_tot}</div><div class="stat-lbl">⏭️ Skipped</div></div>', unsafe_allow_html=True)
-                with c4: st.markdown(f'<div class="stat-box"><div class="stat-num">{inc_tot+exc_tot+skip_tot}</div><div class="stat-lbl">Total</div></div>', unsafe_allow_html=True)
-                st.markdown('<div class="warn-box">🟢 Green = keyword match in title/abstract &nbsp;|&nbsp; 🔴 Red = no match (E4) &nbsp;|&nbsp; Already excluded rows skipped</div>', unsafe_allow_html=True)
+                with c3: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#e3b341">{pend_tot}</div><div class="stat-lbl">⏳ Pending</div></div>', unsafe_allow_html=True)
+                with c4: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#8b949e">{skip_tot}</div><div class="stat-lbl">⏭️ Skipped</div></div>', unsafe_allow_html=True)
+                with c5: st.markdown(f'<div class="stat-box"><div class="stat-num">{inc_tot+exc_tot+pend_tot+skip_tot}</div><div class="stat-lbl">Total</div></div>', unsafe_allow_html=True)
+                st.markdown('<div class="warn-box">🟢 Include = keyword match in both fields &nbsp;|&nbsp; 🔴 Exclude E4 = no match in title+abstract &nbsp;|&nbsp; 🟡 Pending = abstract missing, check manually</div>', unsafe_allow_html=True)
 
                 buf = io.BytesIO(); wb.save(buf); buf.seek(0)
                 st.download_button("📥 Download Screened Excel", data=buf.read(),
