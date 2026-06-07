@@ -430,28 +430,45 @@ def fetch_abstract_for_paper(paper):
 # ── Auto-Screening ────────────────────────────────────────────────────────────
 
 def auto_screen(papers):
-    """Auto-screen E1/E2/E7. For missing year with DOI, tries API recovery first."""
+    """Auto-screen E1/E2/E7.
+    Year logic:
+      - Year present but outside 2015-2026 → Exclude E1 (wrong year, auto)
+      - Year missing, has DOI → try API recovery → if found fill year, keep Pending
+                                                 → if not found, leave Pending (manual)
+      - Year missing, no DOI → leave Pending (manual)
+    """
     counts = {"E1": 0, "E2": 0, "E7": 0, "E1_recovered": 0}
     for p in papers:
         year = str(p.get("year","")).strip()
+        doi  = _norm_doi(p.get("doi",""))
 
-        # E1: Year missing/invalid
-        if not year or not year.isdigit() or not is_valid_year(year):
-            # Try to recover year via API if DOI available
-            recovered = ""
-            doi = _norm_doi(p.get("doi",""))
+        # E1 check
+        if year and year.isdigit() and not is_valid_year(year):
+            # Year IS present but clearly wrong range → auto-exclude
+            p.update(screening_status="Exclude", exclusion_reason="E1",
+                     notes=f"Auto: year {year} outside 2015-2026", auto_excluded=True)
+            counts["E1"] += 1
+            continue
+
+        if not year or not year.isdigit():
+            # Year missing
             if doi:
+                # Try API recovery
                 recovered = recover_year(p)
-            if recovered and recovered.isdigit() and is_valid_year(recovered):
-                p["year"] = recovered
-                p["notes"] = f"Year recovered from API: {recovered}"
-                counts["E1_recovered"] += 1
-                # Fall through to language check
+                if recovered and recovered.isdigit() and is_valid_year(recovered):
+                    p["year"] = recovered
+                    p["notes"] = f"Year recovered from API: {recovered}"
+                    counts["E1_recovered"] += 1
+                    # Fall through to language check
+                else:
+                    # API couldn't find it — leave for manual
+                    p["notes"] = "Year missing — not found via API, check manually"
+                    # keep Pending, continue to next paper
+                    continue
             else:
-                p.update(screening_status="Exclude", exclusion_reason="E1",
-                         notes=f"Auto: year '{year}' missing/outside 2015-2026", auto_excluded=True)
-                counts["E1"] += 1
-                continue
+                # No DOI, no year — leave for manual
+                p["notes"] = "Year missing, no DOI — check manually"
+                continue  # keep Pending
 
         # E2: Language check on title + source
         text = p.get("title","") + " " + p.get("source","")
