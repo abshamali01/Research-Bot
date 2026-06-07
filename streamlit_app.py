@@ -1018,51 +1018,60 @@ with tab2:
     """, unsafe_allow_html=True)
     st.markdown("---")
 
-    def parse_search_string(raw):
-        """Parse multi-query string into list of AND-groups. Queries split by line with just '+'."""
-        import re as _re
-        queries = []
-        # Split queries by '+' on its own line
-        blocks = _re.split(r'(?m)^\s*\+\s*$', raw.strip())
-        for block in blocks:
-            block = block.strip()
-            if not block: continue
-            and_parts = _re.split(r'\bAND\b', block, flags=_re.IGNORECASE)
-            or_groups = []
-            for part in and_parts:
-                part = part.strip()
-                part = _re.sub(r'^\(|\)$', '', part).strip()
-                # Extract quoted and unquoted terms
-                found = _re.findall(r'"([^"]+)"|([A-Za-z][A-Za-z0-9_\-]*)', part)
-                terms = []
-                for quoted, unquoted in found:
-                    t = (quoted or unquoted).strip().lower()
-                    if t and t not in ('or','and'): terms.append(t)
-                if terms: or_groups.append(terms)
-            if or_groups: queries.append(or_groups)
-        return queries
+    US_UK = {
+        'standardization':'standardisation','standardisation':'standardization',
+        'optimization':'optimisation','optimisation':'optimization',
+        'organization':'organisation','organisation':'organization',
+        'anonymization':'anonymisation','anonymisation':'anonymization',
+        'tokenization':'tokenisation','tokenisation':'tokenization',
+        'digitalization':'digitalisation','digitalisation':'digitalization',
+        'digitization':'digitisation','digitisation':'digitization',
+        'normalization':'normalisation','normalisation':'normalization',
+        'utilization':'utilisation','utilisation':'utilization',
+        'generalization':'generalisation','generalisation':'generalization',
+        'contextualization':'contextualisation','contextualisation':'contextualization',
+        'formalization':'formalisation','formalisation':'formalization',
+        'serialization':'serialisation','serialisation':'serialization',
+        'modelling':'modeling','modeling':'modelling',
+        'analyse':'analyze','analyze':'analyse',
+        'behaviour':'behavior','behavior':'behaviour',
+    }
 
-    def paper_matches(paper, queries):
-        """Returns (matched: bool, matched_terms: list). Any query (OR between queries) can match."""
-        title    = (paper.get("title","") or "").lower()
-        abstract = (paper.get("abstract","") or "").lower()
-        text     = title + " " + abstract
-        for query in queries:
-            query_ok = True
-            hits = []
-            for or_group in query:
-                group_ok = False
-                for term in or_group:
-                    if term in text:
-                        group_ok = True
-                        hits.append(term)
-                        break
-                if not group_ok:
-                    query_ok = False
-                    break
-            if query_ok:
-                return True, list(set(hits))
-        return False, []
+    def extract_keywords(raw):
+        """Extract all terms from search string — ignores AND/OR/+ logic entirely."""
+        quoted = re.findall(r'"([^"]+)"', raw)
+        remainder = re.sub(r'"[^"]+"', ' ', raw)
+        remainder = re.sub(r'\b(AND|OR|NOT)\b', ' ', remainder, flags=re.IGNORECASE)
+        remainder = re.sub(r'[+\(\)\n]', ' ', remainder)
+        stopwords = {'the','and','or','not','in','of','for','to','a','an','is','are','with','by','on','at','from'}
+        singles = [w.strip().lower() for w in remainder.split()
+                   if len(w.strip()) >= 3 and w.strip().lower() not in stopwords]
+        seen = set(); unique = []
+        for t in quoted + singles:
+            t = t.strip().lower()
+            if t and t not in seen: seen.add(t); unique.append(t)
+        return unique
+
+    def expand_keywords(terms):
+        """Add US/UK spelling variants automatically."""
+        expanded = list(terms)
+        for term in terms:
+            words = term.lower().split()
+            alt_words = []; changed = False
+            for w in words:
+                alt = US_UK.get(w)
+                if alt: alt_words.append(alt); changed = True
+                else: alt_words.append(w)
+            if changed:
+                alt_term = ' '.join(alt_words)
+                if alt_term not in expanded: expanded.append(alt_term)
+        return expanded
+
+    def paper_matches(paper, keywords):
+        """Returns (matched: bool, matched_terms: list). Match if title OR abstract contains ANY keyword."""
+        text = ((paper.get("title","") or "") + " " + (paper.get("abstract","") or "")).lower()
+        hits = [kw for kw in keywords if kw in text]
+        return bool(hits), hits
 
     col_l, col_r = st.columns([1,1])
     with col_l:
@@ -1076,15 +1085,13 @@ with tab2:
             label_visibility="collapsed", key="search_input")
 
     if screener_xl and search_input.strip():
-        parsed = parse_search_string(search_input)
-        if not parsed:
-            st.error("Could not parse search strings — check format.")
+        raw_kw = extract_keywords(search_input)
+        keywords = expand_keywords(raw_kw)
+        if not keywords:
+            st.error("No keywords found — check your search strings.")
         else:
-            with st.expander(f"✅ Parsed {len(parsed)} quer{'y' if len(parsed)==1 else 'ies'} — verify"):
-                for qi, q in enumerate(parsed, 1):
-                    st.markdown(f"**Query {qi}:**")
-                    for gi, grp in enumerate(q, 1):
-                        st.markdown(f"  AND-group {gi}: `{' OR '.join(grp)}`")
+            with st.expander(f"✅ {len(keywords)} keywords extracted (with US/UK variants) — verify"):
+                st.markdown(", ".join(f"`{k}`" for k in keywords))
             st.markdown("---")
 
             if st.button("🔍 Screen Papers", type="primary", use_container_width=True, key="screen_btn"):
@@ -1120,7 +1127,7 @@ with tab2:
                             "title":    str(ws.cell(ri, tc).value or ""),
                             "abstract": str(ws.cell(ri, ac).value or "") if ac else "",
                         }
-                        matched, terms = paper_matches(paper, parsed)
+                        matched, terms = paper_matches(paper, keywords)
 
                         if matched:
                             ws.cell(ri, sc).value = "Include"
