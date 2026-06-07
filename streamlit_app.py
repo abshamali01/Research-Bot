@@ -1,5 +1,5 @@
 """
-Systematic Review — File Importer v7 (Auto-Screening)
+Systematic Review — File Importer v8 (Language-Aware Auto-Screening)
 3 Dimensions: D1 Standardization & AI, D2 Context Engineering, D3 Token Efficiency
 PRISMA 2020 + Auto E1/E2/E7 Screening + Webster & Watson Concept Matrix + Word Template
 """
@@ -37,6 +37,172 @@ EXCLUSION_CRITERIA = [
 ]
 
 SCREENING_STATUS = ["Pending", "Include", "Exclude"]
+
+# ── Enhanced Language Detection ─────────────────────────────────────────────
+
+def detect_language_simple(text):
+    """
+    Simple but effective language detection for common academic languages.
+    Returns: ("en", confidence) or ("de", confidence), etc.
+    """
+    if not text or len(text.strip()) < 20:
+        return "en", 0.0  # Too short, assume English
+    
+    text_lower = text.lower()
+    
+    # German indicators (high-confidence words)
+    german_words = [
+        'die', 'der', 'das', 'und', 'ist', 'von', 'für', 'mit', 'auf', 'ein', 'eine',
+        'zu', 'den', 'nicht', 'sich', 'es', 'als', 'auch', 'werden', 'wird', 'durch',
+        'aus', 'nach', 'bei', 'einer', 'um', 'über', 'einen', 'sind', 'dass', 'noch',
+        'wurde', 'wurden', 'wird', 'werden', 'kann', 'könnte', 'zwischen', 'anwendung',
+        'stadtentwicklung', 'digitalisierung', 'bauleitpläne', 'perspektiven', 'anwendungsperspektiven',
+        'gestützte', 'gestützten', 'unterstützt', 'unterstützung', 'dargestellt', 'dargestellte',
+        'zusammenfassung', 'einleitung', 'fazit', 'literatur', 'abbildung', 'tabelle',
+        'untersucht', 'untersuchung', 'ergebnisse', 'ergebnis', 'methode', 'methoden',
+        'daten', 'analyse', 'modell', 'system', 'entwicklung', 'konzept', 'konzepte',
+        'ansatz', 'ansätze', 'vorgestellt', 'vorgeschlagen', 'betrachtet', 'betrachtung',
+        'gezeigt', 'dargestellt', 'beschrieben', 'beschreibung', 'verwendet', 'verwendung',
+        'erläutert', 'erlautert', 'dargestellt', 'gegenstand', 'untersuchungsgegenstand',
+        'ziel', 'ziele', 'zielsetzung', 'fragestellung', 'problemstellung', 'herangezogen',
+        'herangezogenen', 'vorgenommen', 'durchgeführt', 'durchgefuehrt', 'durchgeführte',
+        'betrachtung', 'darstellung', 'darstellt', 'behandelt', 'behandlung', 'behandelte',
+        'untersucht', 'untersuchte', 'geprüft', 'geprueft', 'geprüfte', 'gepruefte',
+        'vergleich', 'vergleicht', 'verglichen', 'unterschied', 'unterschiede', 'unterschiedlich',
+        'beispiel', 'beispiele', 'beispielsweise', 'insbesondere', 'besonders', 'speziell',
+        'allgemein', 'allgemeine', 'generell', 'generelle', 'grundlegend', 'grundlegende',
+        'wesentlich', 'wesentliche', 'wichtig', 'wichtige', 'relevant', 'relevante',
+        'aktuell', 'aktuelle', 'neu', 'neue', 'neuer', 'neues', 'neuen', 'neuem',
+        'bestehend', 'bestehende', 'bestehender', 'bestehendes', 'bestehenden', 'bestehendem',
+        'möglich', 'mögliche', 'möglicher', 'mögliches', 'möglichen', 'möglichem',
+        'notwendig', 'notwendige', 'notwendiger', 'notwendiges', 'notwendigen', 'notwendigem',
+        'erforderlich', 'erforderliche', 'erforderlicher', 'erforderliches', 'erforderlichen', 'erforderlichem',
+        'geeignet', 'geeignete', 'geeigneter', 'geeignetes', 'geeigneten', 'geeignetem',
+        'vorteilhaft', 'vorteilhafte', 'vorteilhafter', 'vorteilhaftes', 'vorteilhaften', 'vorteilhaftem',
+        'nachteilig', 'nachteilige', 'nachteiliger', 'nachteiliges', 'nachteiligen', 'nachteiligem',
+        'vorteil', 'vorteile', 'nachteil', 'nachteile', 'nutzen', 'schaden',
+        'gewinn', 'verlust', 'erfolg', 'misserfolg', 'erfolgreich', 'erfolgreiche',
+        'erfolgreicher', 'erfolgreiches', 'erfolgreichen', 'erfolgreichem', 'erfolgreich',
+        'misserfolg', 'misserfolge', 'misserfolgs', 'misserfolges', 'misserfolg',
+        'fehler', 'fehlerhaft', 'fehlerhafte', 'fehlerhafter', 'fehlerhaftes', 'fehlerhaften', 'fehlerhaftem',
+        'korrekt', 'korrekte', 'korrekter', 'korrektes', 'korrekten', 'korrektem',
+        'richtig', 'richtige', 'richtiger', 'richtiges', 'richtigen', 'richtigem',
+        'falsch', 'falsche', 'falscher', 'falsches', 'falschen', 'falschem',
+        'genau', 'genaue', 'genauer', 'genaues', 'genauen', 'genauem', 'genauigkeit',
+        'ungenau', 'ungenaue', 'ungenauer', 'ungenaues', 'ungenauen', 'ungenauem',
+        'präzise', 'praezise', 'präziser', 'praeziser', 'präzises', 'praezises',
+        'unpräzise', 'unpraezise', 'unpräziser', 'unpraeziser', 'unpräzises', 'unpraezises',
+        'approximativ', 'approximative', 'approximativer', 'approximatives', 'approximativen', 'approximativem',
+        'exakt', 'exakte', 'exakter', 'exaktes', 'exakten', 'exaktem', 'exaktheit',
+        'unexakt', 'unexakte', 'unexakter', 'unexaktes', 'unexakten', 'unexaktem',
+        'approximation', 'approximationen', 'approximations', 'approximationes',
+        'näherung', 'naeherung', 'näherungen', 'naeherungen', 'näherungs', 'naeherungs',
+        'näherungsweise', 'naeherungsweise', 'näherungsweiser', 'naeherungsweiser',
+        'näherungsweises', 'naeherungsweises', 'näherungsweisen', 'naeherungsweisen',
+        'näherungsweisem', 'naeherungsweisem',
+    ]
+    
+    # French indicators
+    french_words = [
+        'le', 'la', 'les', 'un', 'une', 'des', 'et', 'est', 'dans', 'en', 'pour', 'par',
+        'sur', 'ce', 'cette', 'qui', 'que', 'avec', 'son', 'se', 'au', 'aux', 'du', 'de',
+        'étude', 'études', 'méthode', 'résultats', 'analyse', 'données', 'système', 'modèle',
+        'recherche', 'travail', 'présenté', 'présente', 'proposé', 'propose', 'utilisé',
+        'utilise', 'montré', 'montre', 'décrit', 'décrits', 'expliqué', 'explique',
+        'français', 'francais', 'française', 'francaise', 'françaises', 'francaises',
+        'langue', 'langues', 'anglais', 'anglaise', 'anglaises', 'traduction', 'traductions',
+        'traduit', 'traduite', 'traduites', 'original', 'originale', 'originales',
+    ]
+    
+    # Spanish indicators
+    spanish_words = [
+        'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'y', 'es', 'en', 'de', 'por',
+        'para', 'con', 'se', 'del', 'al', 'lo', 'le', 'me', 'te', 'lo', 'que', 'como',
+        'más', 'pero', 'sino', 'estudio', 'método', 'resultados', 'análisis', 'datos',
+        'sistema', 'modelo', 'investigación', 'trabajo', 'presentado', 'presenta', 'propuesto',
+        'propone', 'utilizado', 'utiliza', 'mostrado', 'muestra', 'descrito', 'describe',
+        'español', 'espanol', 'española', 'espanola', 'españoles', 'españolas', 'espanolas',
+        'idioma', 'idiomas', 'inglés', 'ingles', 'inglés', 'ingles', 'traducción', 'traducciones',
+        'traducido', 'traducida', 'traducidas', 'original', 'original', 'originales',
+    ]
+    
+    words = set(re.findall(r'\b\w+\b', text_lower))
+    
+    german_count = len(words & set(german_words))
+    french_count = len(words & set(french_words))
+    spanish_count = len(words & set(spanish_words))
+    
+    total_words = len(words)
+    if total_words == 0:
+        return "en", 0.0
+    
+    # Check for German compound words (very characteristic)
+    german_compound_patterns = [
+        r'\b\w{15,}\b',  # Very long words typical of German compounds
+        r'\b\w+ung\b',   # -ung endings
+        r'\b\w+keit\b',  # -keit endings
+        r'\b\w+heit\b',  # -heit endings
+        r'\b\w+lich\b',  # -lich endings
+        r'\b\w+isch\b',  # -isch endings
+        r'\b\w+isch\w+\b',  # -isch- compounds
+    ]
+    
+    german_compound_score = 0
+    for pattern in german_compound_patterns:
+        matches = re.findall(pattern, text_lower)
+        german_compound_score += len(matches)
+    
+    # Calculate confidence scores
+    german_score = (german_count / max(total_words, 1)) * 100 + (german_compound_score * 2)
+    french_score = (french_count / max(total_words, 1)) * 100
+    spanish_score = (spanish_count / max(total_words, 1)) * 100
+    
+    # German-specific: check for umlauts and ß (strong indicators)
+    german_chars = len(re.findall(r'[äöüßÄÖÜ]', text))
+    if german_chars > 2:
+        german_score += 20  # Strong boost for umlauts
+    
+    # Decision
+    if german_score > 8:
+        return "de", min(german_score / 100, 1.0)
+    elif french_score > 8:
+        return "fr", min(french_score / 100, 1.0)
+    elif spanish_score > 8:
+        return "es", min(spanish_score / 100, 1.0)
+    
+    return "en", 0.0
+
+
+def is_english_text(text):
+    """Check if text is English. Returns (is_english, reason, detected_lang)"""
+    if not text or len(text.strip()) < 5:
+        return True, "", "en"  # Too short to judge, assume English
+    
+    lang, confidence = detect_language_simple(text)
+    
+    if lang == "de":
+        return False, f"German detected (confidence: {confidence:.1%})", "de"
+    elif lang == "fr":
+        return False, f"French detected (confidence: {confidence:.1%})", "fr"
+    elif lang == "es":
+        return False, f"Spanish detected (confidence: {confidence:.1%})", "es"
+    
+    # Fallback: non-ASCII check for other languages (Chinese, Russian, etc.)
+    non_ascii = sum(1 for c in text if ord(c) > 127)
+    ratio = non_ascii / len(text)
+    if ratio > 0.25:
+        return False, f"Non-ASCII ratio: {ratio:.1%} (possible non-English)", "unknown"
+    
+    return True, "", "en"
+
+
+def is_english(text):
+    """Simplified version for abstract fetching - returns True/False"""
+    if not text or len(text) < 10:
+        return True
+    is_eng, reason, lang = is_english_text(text)
+    return is_eng
+
 
 # ── Parsers ───────────────────────────────────────────────────────────────────
 
@@ -213,54 +379,8 @@ def deduplicate(papers):
 def is_valid_year(y):
     return str(y).strip().isdigit() and 2015 <= int(str(y).strip()) <= 2026
 
-def is_english_text(text):
-    """Check if text is English. Returns (is_english, reason)"""
-    if not text or len(text.strip()) < 5:
-        return True, ""  # Too short to judge, assume English
-    non_ascii = sum(1 for c in text if ord(c) > 127)
-    ratio = non_ascii / len(text)
-    if ratio > 0.25:
-        return False, f"Non-ASCII ratio: {ratio:.1%}"
-    return True, ""
 
-def auto_screen_papers(papers):
-    """Auto-screen papers for E1 (year), E2 (language), E7 (insufficient detail)"""
-    auto_excluded = {"E1": 0, "E2": 0, "E7": 0}
-
-    for p in papers:
-        # Check E1: Year
-        year = str(p.get("year", "")).strip()
-        if not year or not year.isdigit() or not is_valid_year(year):
-            p["screening_status"] = "Exclude"
-            p["exclusion_reason"] = "E1"
-            p["notes"] = f"Auto-excluded: Year '{year}' is missing or outside 2015-2026"
-            p["auto_excluded"] = True
-            auto_excluded["E1"] += 1
-            continue
-
-        # Check E2: Language (title + source + abstract if available)
-        text_to_check = p.get("title", "") + " " + p.get("source", "") + " " + p.get("abstract", "")
-        is_eng, reason = is_english_text(text_to_check)
-        if not is_eng:
-            p["screening_status"] = "Exclude"
-            p["exclusion_reason"] = "E2"
-            p["notes"] = f"Auto-excluded: Not English. {reason}"
-            p["auto_excluded"] = True
-            auto_excluded["E2"] += 1
-            continue
-
-        # Check E7: Insufficient detail (no title or no authors)
-        if not p.get("title", "").strip() or not p.get("authors", "").strip():
-            p["screening_status"] = "Exclude"
-            p["exclusion_reason"] = "E7"
-            p["notes"] = "Auto-excluded: Missing title or authors"
-            p["auto_excluded"] = True
-            auto_excluded["E7"] += 1
-            continue
-
-    return papers, auto_excluded
-
-# ── Enhanced Abstract Fetching ──────────────────────────────────────────────
+# ── API Language Verification ─────────────────────────────────────────────
 
 import requests as _req
 from bs4 import BeautifulSoup
@@ -279,11 +399,170 @@ def rate_limit():
                 time.sleep(sleep_time)
         _request_times.append(time.time())
 
-def is_english(text):
-    if not text or len(text) < 10: 
-        return True
-    non_ascii = sum(1 for c in text if ord(c) > 127)
-    return (non_ascii / len(text)) < 0.3
+
+def verify_english_via_api(doi, title, source):
+    """
+    Verify if a paper is English by checking Semantic Scholar API.
+    Returns: (is_english, source_of_verification, abstract_if_found)
+    """
+    if not doi:
+        return None, "no_doi", None  # Can't verify, fall back to text analysis
+    
+    # Try Semantic Scholar API with DOI
+    try:
+        rate_limit()
+        r = _req.get(
+            f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}",
+            params={"fields": "title,abstract,authors,year,language"},
+            timeout=10
+        )
+        if r.ok:
+            data = r.json()
+            # Check if language field exists
+            language = data.get("language", "").lower()
+            if language:
+                if language in ["en", "english", "eng"]:
+                    return True, "semantic_scholar_api", data.get("abstract", "")
+                elif language in ["de", "german", "deu"]:
+                    return False, "semantic_scholar_api", data.get("abstract", "")
+                elif language in ["fr", "french", "fra"]:
+                    return False, "semantic_scholar_api", data.get("abstract", "")
+                elif language in ["es", "spanish", "spa"]:
+                    return False, "semantic_scholar_api", data.get("abstract", "")
+                else:
+                    # Unknown language from API, check abstract content
+                    abstract = data.get("abstract", "")
+                    if abstract:
+                        is_eng, reason, lang = is_english_text(abstract)
+                        return is_eng, f"semantic_scholar_abstract", abstract
+                    return None, "semantic_scholar_unknown_lang", None
+            
+            # No language field, check title/abstract
+            api_title = data.get("title", "")
+            api_abstract = data.get("abstract", "")
+            
+            if api_abstract:
+                is_eng, reason, lang = is_english_text(api_abstract)
+                return is_eng, "semantic_scholar_abstract", api_abstract
+            elif api_title:
+                is_eng, reason, lang = is_english_text(api_title)
+                return is_eng, "semantic_scholar_title", None
+                
+    except Exception as e:
+        pass
+    
+    # Try Crossref as fallback
+    try:
+        rate_limit()
+        r = _req.get(
+            f"https://api.crossref.org/works/{doi}",
+            headers={"User-Agent": "SystematicReview/1.0 (mailto:research@example.com)"},
+            timeout=10
+        )
+        if r.ok:
+            data = r.json().get("message", {})
+            # Crossref sometimes has language field
+            language = data.get("language", "").lower()
+            if language:
+                if language in ["en", "english", "eng"]:
+                    return True, "crossref_api", None
+                elif language in ["de", "german", "deu"]:
+                    return False, "crossref_api", None
+                elif language in ["fr", "french", "fra"]:
+                    return False, "crossref_api", None
+                elif language in ["es", "spanish", "spa"]:
+                    return False, "crossref_api", None
+            
+            # Check title from Crossref
+            title_list = data.get("title", [])
+            if title_list:
+                crossref_title = title_list[0]
+                is_eng, reason, lang = is_english_text(crossref_title)
+                return is_eng, "crossref_title", None
+                
+    except Exception:
+        pass
+    
+    return None, "api_failed", None  # Could not verify via API
+
+
+def auto_screen_papers(papers):
+    """Auto-screen papers for E1 (year), E2 (language), E7 (insufficient detail)"""
+    auto_excluded = {"E1": 0, "E2": 0, "E7": 0}
+    api_verified_count = 0
+
+    for p in papers:
+        # Check E1: Year
+        year = str(p.get("year", "")).strip()
+        if not year or not year.isdigit() or not is_valid_year(year):
+            p["screening_status"] = "Exclude"
+            p["exclusion_reason"] = "E1"
+            p["notes"] = f"Auto-excluded: Year '{year}' is missing or outside 2015-2026"
+            p["auto_excluded"] = True
+            auto_excluded["E1"] += 1
+            continue
+
+        # Check E2: Language - with API verification if DOI available
+        doi = p.get("doi", "").strip()
+        title = p.get("title", "")
+        source = p.get("source", "")
+        
+        # First, try API verification if DOI exists
+        api_is_english = None
+        api_source = None
+        api_abstract = None
+        
+        if doi:
+            api_is_english, api_source, api_abstract = verify_english_via_api(doi, title, source)
+            if api_is_english is not None:
+                api_verified_count += 1
+        
+        # If API verified, use that result
+        if api_is_english is not None:
+            if not api_is_english:
+                p["screening_status"] = "Exclude"
+                p["exclusion_reason"] = "E2"
+                p["notes"] = f"Auto-excluded: Not English (verified via {api_source})"
+                p["auto_excluded"] = True
+                # If we got a non-English abstract from API, we note it but don't store it
+                if api_abstract:
+                    p["abstract"] = f"[NON-ENGLISH - {api_source}] {api_abstract[:100]}..."
+                auto_excluded["E2"] += 1
+                continue
+            else:
+                # API says it's English - we can optionally use the API abstract
+                if api_abstract and len(api_abstract) > 50:
+                    p["abstract"] = api_abstract
+        else:
+            # No API verification available, fall back to text analysis
+            text_to_check = title + " " + source + " " + p.get("abstract", "")
+            is_eng, reason, detected_lang = is_english_text(text_to_check)
+            
+            if not is_eng:
+                p["screening_status"] = "Exclude"
+                p["exclusion_reason"] = "E2"
+                p["notes"] = f"Auto-excluded: Not English ({reason})"
+                p["auto_excluded"] = True
+                auto_excluded["E2"] += 1
+                continue
+
+        # Check E7: Insufficient detail (no title or no authors)
+        if not title.strip() or not p.get("authors", "").strip():
+            p["screening_status"] = "Exclude"
+            p["exclusion_reason"] = "E7"
+            p["notes"] = "Auto-excluded: Missing title or authors"
+            p["auto_excluded"] = True
+            auto_excluded["E7"] += 1
+            continue
+
+    # Log API verification stats
+    if api_verified_count > 0:
+        print(f"API verified language for {api_verified_count} papers")
+    
+    return papers, auto_excluded
+
+
+# ── Enhanced Abstract Fetching ──────────────────────────────────────────────
 
 def clean_abstract(text):
     if not text: 
@@ -407,26 +686,39 @@ def fetch_semantic_scholar(doi):
         rate_limit()
         r = _req.get(
             f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}",
-            params={"fields": "title,abstract,authors,year"}, 
+            params={"fields": "title,abstract,authors,year,language"}, 
             timeout=10
         )
         if r.ok:
             data = r.json()
             abstract = data.get("abstract", "")
+            language = data.get("language", "").lower()
+            
+            # Reject if explicitly non-English
+            if language in ["de", "german", "fr", "french", "es", "spanish"]:
+                return ""  # Don't return non-English abstracts
+            
             if abstract and len(abstract) > 50 and is_english(abstract):
                 return abstract
     except Exception:
         pass
+    
+    # Fallback: try without DOI: prefix
     try:
         rate_limit()
         r = _req.get(
             f"https://api.semanticscholar.org/graph/v1/paper/{doi}",
-            params={"fields": "title,abstract,authors,year"}, 
+            params={"fields": "title,abstract,authors,year,language"}, 
             timeout=10
         )
         if r.ok:
             data = r.json()
             abstract = data.get("abstract", "")
+            language = data.get("language", "").lower()
+            
+            if language in ["de", "german", "fr", "french", "es", "spanish"]:
+                return ""
+            
             if abstract and len(abstract) > 50 and is_english(abstract):
                 return abstract
     except Exception:
@@ -761,7 +1053,7 @@ def build_dimension_excel(papers, stats, dupe_list, dimension_name, dimension_co
         ["Identification", "Duplicate records removed", "All", "ALL", total_dupes, "", "See Duplicates_Removed sheet"],
         ["Identification", "Records after deduplication", "All", "ALL", after_dedup, "", ""],
         ["Screening", "Auto-excluded: E1 (invalid year)", "All", "ALL", auto_e1, "", "Auto-detected missing/invalid year"],
-        ["Screening", "Auto-excluded: E2 (not English)", "All", "ALL", auto_e2, "", "Auto-detected non-English title/abstract"],
+        ["Screening", "Auto-excluded: E2 (not English)", "All", "ALL", auto_e2, "", "Auto-detected non-English title/abstract via API + text analysis"],
         ["Screening", "Auto-excluded: E7 (insufficient detail)", "All", "ALL", auto_e7, "", "Auto-detected missing title/authors"],
         ["Screening", "Records after auto-screening", "All", "ALL", after_auto_screen, "", "Papers needing manual review"],
         ["Screening", "Records screened (title/abstract)", "All", "ALL", after_auto_screen, "", "Manual screening required"],
@@ -909,7 +1201,7 @@ def build_dimension_excel(papers, stats, dupe_list, dimension_name, dimension_co
         ws4.row_dimensions[ri].height = 22
 
     # Add auto-exclusion note
-    ws4["B13"].value = "Note: E1, E2, E7 are auto-detected by the script. E3, E4, E5, E6, E8 require manual screening."
+    ws4["B13"].value = "Note: E1, E2, E7 are auto-detected by the script. E2 uses Semantic Scholar API + Crossref + text analysis for language detection. E3, E4, E5, E6, E8 require manual screening."
     ws4["B13"].font = Font(italic=True, name="Arial", size=9, color="595959")
 
     buf = io.BytesIO()
@@ -1019,6 +1311,7 @@ def generate_word_template():
         doc.add_paragraph(f'• {crit}', style='List Bullet')
     doc.add_paragraph()
     doc.add_paragraph('Note: E1 (invalid year), E2 (not English), and E7 (insufficient detail) were auto-detected by the screening script. '
+                     'E2 uses Semantic Scholar API + Crossref API + text analysis for robust language detection. '
                      'E3, E4, E5, E6, and E8 required manual screening.')
 
     doc.add_heading('2.4 Analysis Method', level=2)
@@ -1341,7 +1634,7 @@ if uploaded:
     <div class="sr-card">
         <h3 style="margin-top: 0;">🤖 Step 2 — Auto-Screening</h3>
         <p style="color: #8b949e; margin-bottom: 12px;">
-            Automatically detecting E1 (invalid year), E2 (not English), E7 (insufficient detail)
+            Automatically detecting E1 (invalid year), E2 (not English via API + text analysis), E7 (insufficient detail)
         </p>
     </div>
     """, unsafe_allow_html=True)
