@@ -807,201 +807,369 @@ hr{border:none!important;height:1px!important;background:linear-gradient(90deg,t
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("""
-<div style="text-align:center;padding:20px 0 30px 0;">
-<h1 style="font-size:2.5rem;margin-bottom:8px;">🔬 Systematic Review Bot</h1>
-<p style="color:#8b949e;font-size:1.1rem;margin:0;">
-Upload CSV/BIB → Auto-Screen E1/E2/E7 → Fetch Abstracts → Post-fetch Language Check → 3 Workbooks + Word
-</p></div>
-""", unsafe_allow_html=True)
-st.markdown("---")
+tab1, tab2 = st.tabs(["📥 File Importer", "🔍 Keyword Screener"])
 
-st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📁 Step 1 — Upload Files</h3><p style="color:#8b949e;margin-bottom:12px;">Name files like <code>springer_d1q1.csv</code>, <code>acm_d1q2.bib</code>, <code>scopus_d2q1.csv</code>, <code>scholar_d3q1.csv</code></p></div>', unsafe_allow_html=True)
-st.caption("Supports: Springer CSV · Scopus CSV · Google Scholar CSV (Publish or Perish) · ACM BibTeX")
-
-uploaded = st.file_uploader("Drop all files here", type=["csv","bib"],
-                              accept_multiple_files=True, label_visibility="collapsed")
-
-if uploaded:
+with tab1:
+    st.markdown("""
+    <div style="text-align:center;padding:20px 0 30px 0;">
+    <h1 style="font-size:2.5rem;margin-bottom:8px;">🔬 Systematic Review Bot</h1>
+    <p style="color:#8b949e;font-size:1.1rem;margin:0;">
+    Upload CSV/BIB → Auto-Screen E1/E2/E7 → Fetch Abstracts → Post-fetch Language Check → 3 Workbooks + Word
+    </p></div>
+    """, unsafe_allow_html=True)
     st.markdown("---")
-    all_papers, stats, parse_log = [], {"identification":{}}, []
 
-    for f in uploaded:
-        fname = f.name.lower()
-        qid = "UNKNOWN"
-        for q in ["d1q1","d1q2","d2q1","d2q2","d2q3","d3q1","d3q2","d3q3"]:
-            if q in fname: qid=q.upper(); break
-        cf = f.read().decode("utf-8",errors="replace")
-        if fname.endswith(".bib"):
-            papers=parse_bib(cf,qid); db="ACM"
-        else:
-            ctype=detect_csv_type(cf,fname)
-            if ctype=="springer":         papers=parse_springer_csv(cf,qid);   db="Springer"
-            elif ctype in("scopus","scopus_pop"):
-                papers=parse_scopus_pop_csv(cf,qid) if ctype=="scopus_pop" else parse_scopus_csv(cf,qid)
-                db="Elsevier/Scopus"
-            else:                         papers=parse_scholar_csv(cf,qid);    db="Google Scholar"
-        parse_log.append((f.name,db,qid,len(papers)))
-        stats["identification"].setdefault(db,{}).setdefault(qid,0)
-        stats["identification"][db][qid]+=len(papers)
-        all_papers.extend(papers)
+    st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📁 Step 1 — Upload Files</h3><p style="color:#8b949e;margin-bottom:12px;">Name files like <code>springer_d1q1.csv</code>, <code>acm_d1q2.bib</code>, <code>scopus_d2q1.csv</code>, <code>scholar_d3q1.csv</code></p></div>', unsafe_allow_html=True)
+    st.caption("Supports: Springer CSV · Scopus CSV · Google Scholar CSV (Publish or Perish) · ACM BibTeX")
 
-    unique, dupe_list = deduplicate(all_papers)
+    uploaded = st.file_uploader("Drop all files here", type=["csv","bib"],
+                                  accept_multiple_files=True, label_visibility="collapsed")
 
-    # Step 2: Auto-screening (with year recovery)
-    st.markdown('<div class="sr-card"><h3 style="margin-top:0;">🤖 Step 2 — Auto-Screening</h3><p style="color:#8b949e;margin-bottom:8px;">Auto-detecting E1/E2/E7. For missing year with DOI → API recovery attempted first.</p></div>', unsafe_allow_html=True)
-
-    with st.spinner("Auto-screening papers (recovering missing years via API)..."):
-        unique, auto_counts = auto_screen(unique)
-
-    pending = [p for p in unique if p.get("screening_status")=="Pending"]
-    stats.update({
-        "total_raw":len(all_papers), "duplicates":len(dupe_list),
-        "after_dedup":len(unique), "auto_total":sum(v for k,v in auto_counts.items() if k!="E1_recovered"),
-    })
-
-    c1,c2,c3,c4=st.columns(4)
-    with c1: st.markdown(f'<div class="stat-box"><div class="stat-num">{auto_counts["E1"]}</div><div class="stat-lbl">Auto E1 (Year)</div></div>',unsafe_allow_html=True)
-    with c2: st.markdown(f'<div class="stat-box"><div class="stat-num">{auto_counts["E2"]}</div><div class="stat-lbl">Auto E2 (Language)</div></div>',unsafe_allow_html=True)
-    with c3: st.markdown(f'<div class="stat-box"><div class="stat-num">{auto_counts["E7"]}</div><div class="stat-lbl">Auto E7 (Detail)</div></div>',unsafe_allow_html=True)
-    with c4: st.markdown(f'<div class="stat-box"><div class="stat-num">{len(pending)}</div><div class="stat-lbl">Need Manual Screen</div></div>',unsafe_allow_html=True)
-    if auto_counts["E1_recovered"] > 0:
-        st.markdown(f'<div class="warn-box">ℹ️ <b>{auto_counts["E1_recovered"]} papers</b> had missing year — recovered from API and kept for screening</div>',unsafe_allow_html=True)
-
-    # Step 3: Parse log
-    st.markdown("---")
-    st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📊 Step 3 — Files Parsed</h3></div>',unsafe_allow_html=True)
-    for fname,db,qid,n in parse_log:
-        db_cls={"Springer":"springer","ACM":"acm","Elsevier/Scopus":"scopus","Google Scholar":"scholar"}.get(db,"springer")
-        st.markdown(f"<div style='margin:4px 0;'><code>{fname}</code> → <span class='tag tag-{db_cls}'>{db}</span> <code>{qid}</code> → <b>{n} papers</b></div>",unsafe_allow_html=True)
-
-    # Step 4: Summary
-    st.markdown("---")
-    st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📈 Step 4 — Summary by Dimension</h3></div>',unsafe_allow_html=True)
-    c1,c2,c3,c4=st.columns(4)
-    with c1: st.markdown(f'<div class="stat-box"><div class="stat-num">{stats["total_raw"]}</div><div class="stat-lbl">Total Raw</div></div>',unsafe_allow_html=True)
-    with c2: st.markdown(f'<div class="stat-box"><div class="stat-num">{len(dupe_list)}</div><div class="stat-lbl">Duplicates Removed</div></div>',unsafe_allow_html=True)
-    with c3: st.markdown(f'<div class="stat-box"><div class="stat-num">{stats["after_dedup"]}</div><div class="stat-lbl">Unique Papers</div></div>',unsafe_allow_html=True)
-    with c4:
-        d_counts={}
-        for p in unique: d=p.get("dimension","")[:2]; d_counts[d]=d_counts.get(d,0)+1
-        summary=" / ".join(f"{k}:{v}" for k,v in sorted(d_counts.items()))
-        st.markdown(f'<div class="stat-box"><div class="stat-num" style="font-size:1.1rem">{summary}</div><div class="stat-lbl">By Dimension</div></div>',unsafe_allow_html=True)
-
-    # Step 5: Generate
-    st.markdown("---")
-    need_abstract=[p for p in pending if p.get("doi","").strip() or p.get("url","").strip()]
-    est_mins=max(1,len(need_abstract)//15)
-    st.markdown(f'<div class="sr-card"><h3 style="margin-top:0;">🚀 Step 5 — Generate Workbooks</h3><p style="color:#8b949e;margin-bottom:0;">Fetch abstracts for <b>{len(need_abstract)} pending papers</b> · post-fetch language check · 3 Excel workbooks + Word (~{est_mins} min)</p></div>',unsafe_allow_html=True)
-
-    fetch_toggle=st.checkbox("Fetch abstracts automatically",value=True)
-    with st.expander("⚙️ Advanced Options"):
-        max_workers=st.slider("Concurrent fetch workers",1,5,3)
-        st.info("PDFs, blocked sites, Scopus inward links auto-skipped.")
-
-    generate_clicked=st.button("🚀 Generate All Workbooks",type="primary",use_container_width=True)
-
-    if generate_clicked:
-        prog=st.progress(0); s_txt=st.empty(); d_txt=st.empty()
-
-        if fetch_toggle and need_abstract:
-            t0=time.time(); total=len(need_abstract)
-            s_txt.markdown("🔄 **Fetching abstracts...**")
-
-            pdf_c=sum(1 for p in need_abstract if _is_pdf(p.get("url","")))
-            blk_c=sum(1 for p in need_abstract if _is_blocked(p.get("url","")))
-            scp_c=sum(1 for p in need_abstract if _is_scopus_inward(p.get("url","")))
-            if pdf_c+blk_c+scp_c>0:
-                st.info(f"Auto-skipping: {pdf_c} PDFs · {blk_c} blocked · {scp_c} Scopus links")
-
-            results={}; found=completed=0
-
-            def fetch_one(ip): i,p=ip; return i,fetch_abstract_for_paper(p)
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
-                futures={ex.submit(fetch_one,(i,p)):i for i,p in enumerate(need_abstract)}
-                for future in concurrent.futures.as_completed(futures):
-                    idx,abstract=future.result()
-                    results[idx]=abstract
-                    if abstract: found+=1
-                    completed+=1
-                    pct=int((completed/total)*100)
-                    prog.progress(pct/100)
-                    elapsed=time.time()-t0
-                    rate=completed/elapsed if elapsed>0 else 1
-                    m,s=divmod(int((total-completed)/rate),60)
-                    d_txt.markdown(f"**{pct}%** · ⏱ {m}m {s}s remaining · ✅ {found} fetched · {completed}/{total}")
-
-            for idx,abstract in results.items():
-                need_abstract[idx]["abstract"]=abstract
-
-            prog.progress(1.0)
-            s_txt.markdown(f"✅ **Abstracts done!** {found}/{total} in {int(time.time()-t0)}s")
-            d_txt.empty()
-
-            # Post-fetch language check
-            s_txt.markdown("🌐 **Post-fetch language check on title+abstract...**")
-            unique, pf_flagged = post_fetch_language_check(unique)
-            if pf_flagged > 0:
-                st.markdown(f'<div class="warn-box">⚠️ <b>{pf_flagged} papers</b> flagged E2 post-fetch (abstract not English)</div>',unsafe_allow_html=True)
-            s_txt.empty()
-
-        # Build Excel
-        s_txt.markdown("📊 **Building dimension workbooks...**")
-        for dim_code,dim_name in DIMENSION_NAMES.items():
-            excel_bytes=build_dimension_excel(unique,dupe_list,dim_code,dim_name)
-            if excel_bytes:
-                st.session_state[f"excel_{dim_code}"]=excel_bytes
-                st.session_state[f"fname_{dim_code}"]=f"{dim_name}_{datetime.now():%Y%m%d_%H%M}.xlsx"
-
-        # Build Word
-        s_txt.markdown("📝 **Generating Word template...**")
-        try:
-            st.session_state["word_bytes"]=generate_word()
-            st.session_state["word_fname"]=f"SR_Method_Findings_{datetime.now():%Y%m%d_%H%M}.docx"
-        except Exception as e:
-            st.warning(f"Word failed: {e} — install python-docx")
-
-        st.session_state["excel_ready"]=True
-        st.session_state["total"]=stats["after_dedup"]
-        st.session_state["dupes"]=len(dupe_list)
-        st.session_state["abstracts"]=sum(1 for p in unique if p.get("abstract","").strip())
-        st.session_state["auto_total"]=stats.get("auto_total",0)
-        s_txt.empty(); prog.empty()
-
-    # Step 6: Download
-    if st.session_state.get("excel_ready"):
+    if uploaded:
         st.markdown("---")
-        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📥 Step 6 — Download</h3></div>',unsafe_allow_html=True)
-        st.markdown("#### 📊 Dimension Workbooks")
-        for dim_code in ["D1","D2","D3"]:
-            if f"excel_{dim_code}" in st.session_state:
-                dim_name=DIMENSION_NAMES[dim_code]
-                st.markdown(f'<div class="sheet-card"><b>{dim_name}</b> — PRISMA Flow · Screening (auto+manual) · Duplicates · Missing Year/DOI · Concept Matrix · Exclusion Criteria</div>',unsafe_allow_html=True)
-                st.download_button(f"📥 Download {dim_name}",
-                    data=st.session_state[f"excel_{dim_code}"],
-                    file_name=st.session_state[f"fname_{dim_code}"],
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key=f"dl_{dim_code}")
-        if "word_bytes" in st.session_state:
-            st.markdown("#### 📝 Word Template")
-            st.markdown('<div class="sheet-card"><b>Method & Findings Template</b> — Intro · Methodology · Search Strings · PRISMA · 3 Dimension Findings · Discussion · Conclusion</div>',unsafe_allow_html=True)
-            st.download_button("📥 Download Word Template",
-                data=st.session_state["word_bytes"],
-                file_name=st.session_state["word_fname"],
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                key="dl_word")
-        n=st.session_state.get("total",0); a=st.session_state.get("abstracts",0)
-        d=st.session_state.get("dupes",0); at=st.session_state.get("auto_total",0)
-        st.success(f"✅ {n} papers · {a} with abstract · {d} dupes removed · {at} auto-excluded (E1/E2/E7)")
+        all_papers, stats, parse_log = [], {"identification":{}}, []
 
-else:
+        for f in uploaded:
+            fname = f.name.lower()
+            qid = "UNKNOWN"
+            for q in ["d1q1","d1q2","d2q1","d2q2","d2q3","d3q1","d3q2","d3q3"]:
+                if q in fname: qid=q.upper(); break
+            cf = f.read().decode("utf-8",errors="replace")
+            if fname.endswith(".bib"):
+                papers=parse_bib(cf,qid); db="ACM"
+            else:
+                ctype=detect_csv_type(cf,fname)
+                if ctype=="springer":         papers=parse_springer_csv(cf,qid);   db="Springer"
+                elif ctype in("scopus","scopus_pop"):
+                    papers=parse_scopus_pop_csv(cf,qid) if ctype=="scopus_pop" else parse_scopus_csv(cf,qid)
+                    db="Elsevier/Scopus"
+                else:                         papers=parse_scholar_csv(cf,qid);    db="Google Scholar"
+            parse_log.append((f.name,db,qid,len(papers)))
+            stats["identification"].setdefault(db,{}).setdefault(qid,0)
+            stats["identification"][db][qid]+=len(papers)
+            all_papers.extend(papers)
+
+        unique, dupe_list = deduplicate(all_papers)
+
+        # Step 2: Auto-screening (with year recovery)
+        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">🤖 Step 2 — Auto-Screening</h3><p style="color:#8b949e;margin-bottom:8px;">Auto-detecting E1/E2/E7. For missing year with DOI → API recovery attempted first.</p></div>', unsafe_allow_html=True)
+
+        with st.spinner("Auto-screening papers (recovering missing years via API)..."):
+            unique, auto_counts = auto_screen(unique)
+
+        pending = [p for p in unique if p.get("screening_status")=="Pending"]
+        stats.update({
+            "total_raw":len(all_papers), "duplicates":len(dupe_list),
+            "after_dedup":len(unique), "auto_total":sum(v for k,v in auto_counts.items() if k!="E1_recovered"),
+        })
+
+        c1,c2,c3,c4=st.columns(4)
+        with c1: st.markdown(f'<div class="stat-box"><div class="stat-num">{auto_counts["E1"]}</div><div class="stat-lbl">Auto E1 (Year)</div></div>',unsafe_allow_html=True)
+        with c2: st.markdown(f'<div class="stat-box"><div class="stat-num">{auto_counts["E2"]}</div><div class="stat-lbl">Auto E2 (Language)</div></div>',unsafe_allow_html=True)
+        with c3: st.markdown(f'<div class="stat-box"><div class="stat-num">{auto_counts["E7"]}</div><div class="stat-lbl">Auto E7 (Detail)</div></div>',unsafe_allow_html=True)
+        with c4: st.markdown(f'<div class="stat-box"><div class="stat-num">{len(pending)}</div><div class="stat-lbl">Need Manual Screen</div></div>',unsafe_allow_html=True)
+        if auto_counts["E1_recovered"] > 0:
+            st.markdown(f'<div class="warn-box">ℹ️ <b>{auto_counts["E1_recovered"]} papers</b> had missing year — recovered from API and kept for screening</div>',unsafe_allow_html=True)
+
+        # Step 3: Parse log
+        st.markdown("---")
+        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📊 Step 3 — Files Parsed</h3></div>',unsafe_allow_html=True)
+        for fname,db,qid,n in parse_log:
+            db_cls={"Springer":"springer","ACM":"acm","Elsevier/Scopus":"scopus","Google Scholar":"scholar"}.get(db,"springer")
+            st.markdown(f"<div style='margin:4px 0;'><code>{fname}</code> → <span class='tag tag-{db_cls}'>{db}</span> <code>{qid}</code> → <b>{n} papers</b></div>",unsafe_allow_html=True)
+
+        # Step 4: Summary
+        st.markdown("---")
+        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📈 Step 4 — Summary by Dimension</h3></div>',unsafe_allow_html=True)
+        c1,c2,c3,c4=st.columns(4)
+        with c1: st.markdown(f'<div class="stat-box"><div class="stat-num">{stats["total_raw"]}</div><div class="stat-lbl">Total Raw</div></div>',unsafe_allow_html=True)
+        with c2: st.markdown(f'<div class="stat-box"><div class="stat-num">{len(dupe_list)}</div><div class="stat-lbl">Duplicates Removed</div></div>',unsafe_allow_html=True)
+        with c3: st.markdown(f'<div class="stat-box"><div class="stat-num">{stats["after_dedup"]}</div><div class="stat-lbl">Unique Papers</div></div>',unsafe_allow_html=True)
+        with c4:
+            d_counts={}
+            for p in unique: d=p.get("dimension","")[:2]; d_counts[d]=d_counts.get(d,0)+1
+            summary=" / ".join(f"{k}:{v}" for k,v in sorted(d_counts.items()))
+            st.markdown(f'<div class="stat-box"><div class="stat-num" style="font-size:1.1rem">{summary}</div><div class="stat-lbl">By Dimension</div></div>',unsafe_allow_html=True)
+
+        # Step 5: Generate
+        st.markdown("---")
+        need_abstract=[p for p in pending if p.get("doi","").strip() or p.get("url","").strip()]
+        est_mins=max(1,len(need_abstract)//15)
+        st.markdown(f'<div class="sr-card"><h3 style="margin-top:0;">🚀 Step 5 — Generate Workbooks</h3><p style="color:#8b949e;margin-bottom:0;">Fetch abstracts for <b>{len(need_abstract)} pending papers</b> · post-fetch language check · 3 Excel workbooks + Word (~{est_mins} min)</p></div>',unsafe_allow_html=True)
+
+        fetch_toggle=st.checkbox("Fetch abstracts automatically",value=True)
+        with st.expander("⚙️ Advanced Options"):
+            max_workers=st.slider("Concurrent fetch workers",1,5,3)
+            st.info("PDFs, blocked sites, Scopus inward links auto-skipped.")
+
+        generate_clicked=st.button("🚀 Generate All Workbooks",type="primary",use_container_width=True)
+
+        if generate_clicked:
+            prog=st.progress(0); s_txt=st.empty(); d_txt=st.empty()
+
+            if fetch_toggle and need_abstract:
+                t0=time.time(); total=len(need_abstract)
+                s_txt.markdown("🔄 **Fetching abstracts...**")
+
+                pdf_c=sum(1 for p in need_abstract if _is_pdf(p.get("url","")))
+                blk_c=sum(1 for p in need_abstract if _is_blocked(p.get("url","")))
+                scp_c=sum(1 for p in need_abstract if _is_scopus_inward(p.get("url","")))
+                if pdf_c+blk_c+scp_c>0:
+                    st.info(f"Auto-skipping: {pdf_c} PDFs · {blk_c} blocked · {scp_c} Scopus links")
+
+                results={}; found=completed=0
+
+                def fetch_one(ip): i,p=ip; return i,fetch_abstract_for_paper(p)
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+                    futures={ex.submit(fetch_one,(i,p)):i for i,p in enumerate(need_abstract)}
+                    for future in concurrent.futures.as_completed(futures):
+                        idx,abstract=future.result()
+                        results[idx]=abstract
+                        if abstract: found+=1
+                        completed+=1
+                        pct=int((completed/total)*100)
+                        prog.progress(pct/100)
+                        elapsed=time.time()-t0
+                        rate=completed/elapsed if elapsed>0 else 1
+                        m,s=divmod(int((total-completed)/rate),60)
+                        d_txt.markdown(f"**{pct}%** · ⏱ {m}m {s}s remaining · ✅ {found} fetched · {completed}/{total}")
+
+                for idx,abstract in results.items():
+                    need_abstract[idx]["abstract"]=abstract
+
+                prog.progress(1.0)
+                s_txt.markdown(f"✅ **Abstracts done!** {found}/{total} in {int(time.time()-t0)}s")
+                d_txt.empty()
+
+                # Post-fetch language check
+                s_txt.markdown("🌐 **Post-fetch language check on title+abstract...**")
+                unique, pf_flagged = post_fetch_language_check(unique)
+                if pf_flagged > 0:
+                    st.markdown(f'<div class="warn-box">⚠️ <b>{pf_flagged} papers</b> flagged E2 post-fetch (abstract not English)</div>',unsafe_allow_html=True)
+                s_txt.empty()
+
+            # Build Excel
+            s_txt.markdown("📊 **Building dimension workbooks...**")
+            for dim_code,dim_name in DIMENSION_NAMES.items():
+                excel_bytes=build_dimension_excel(unique,dupe_list,dim_code,dim_name)
+                if excel_bytes:
+                    st.session_state[f"excel_{dim_code}"]=excel_bytes
+                    st.session_state[f"fname_{dim_code}"]=f"{dim_name}_{datetime.now():%Y%m%d_%H%M}.xlsx"
+
+            # Build Word
+            s_txt.markdown("📝 **Generating Word template...**")
+            try:
+                st.session_state["word_bytes"]=generate_word()
+                st.session_state["word_fname"]=f"SR_Method_Findings_{datetime.now():%Y%m%d_%H%M}.docx"
+            except Exception as e:
+                st.warning(f"Word failed: {e} — install python-docx")
+
+            st.session_state["excel_ready"]=True
+            st.session_state["total"]=stats["after_dedup"]
+            st.session_state["dupes"]=len(dupe_list)
+            st.session_state["abstracts"]=sum(1 for p in unique if p.get("abstract","").strip())
+            st.session_state["auto_total"]=stats.get("auto_total",0)
+            s_txt.empty(); prog.empty()
+
+        # Step 6: Download
+        if st.session_state.get("excel_ready"):
+            st.markdown("---")
+            st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📥 Step 6 — Download</h3></div>',unsafe_allow_html=True)
+            st.markdown("#### 📊 Dimension Workbooks")
+            for dim_code in ["D1","D2","D3"]:
+                if f"excel_{dim_code}" in st.session_state:
+                    dim_name=DIMENSION_NAMES[dim_code]
+                    st.markdown(f'<div class="sheet-card"><b>{dim_name}</b> — PRISMA Flow · Screening (auto+manual) · Duplicates · Missing Year/DOI · Concept Matrix · Exclusion Criteria</div>',unsafe_allow_html=True)
+                    st.download_button(f"📥 Download {dim_name}",
+                        data=st.session_state[f"excel_{dim_code}"],
+                        file_name=st.session_state[f"fname_{dim_code}"],
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"dl_{dim_code}")
+            if "word_bytes" in st.session_state:
+                st.markdown("#### 📝 Word Template")
+                st.markdown('<div class="sheet-card"><b>Method & Findings Template</b> — Intro · Methodology · Search Strings · PRISMA · 3 Dimension Findings · Discussion · Conclusion</div>',unsafe_allow_html=True)
+                st.download_button("📥 Download Word Template",
+                    data=st.session_state["word_bytes"],
+                    file_name=st.session_state["word_fname"],
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key="dl_word")
+            n=st.session_state.get("total",0); a=st.session_state.get("abstracts",0)
+            d=st.session_state.get("dupes",0); at=st.session_state.get("auto_total",0)
+            st.success(f"✅ {n} papers · {a} with abstract · {d} dupes removed · {at} auto-excluded (E1/E2/E7)")
+
+    else:
+        st.markdown("---")
+        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📋 File Naming Convention</h3></div>',unsafe_allow_html=True)
+        st.dataframe(pd.DataFrame({
+            "File":  ["springer_d1q1.csv","springer_d1q2.csv","acm_d1q1.bib","acm_d1q2.bib","scopus_d2q1.csv","scholar_d3q1.csv"],
+            "DB":    ["Springer","Springer","ACM","ACM","Elsevier/Scopus","Google Scholar"],
+            "Query": ["D1Q1","D1Q2","D1Q1","D1Q2","D2Q1","D3Q1"],
+            "Format":["CSV","CSV","BibTeX","BibTeX","CSV","CSV"],
+        }),use_container_width=True,hide_index=True)
+        st.info("💡 Query ID (d1q1, d2q2 etc.) must be in filename.")
+
+with tab2:
+    st.markdown("""
+    <div style="text-align:center;padding:10px 0 20px 0;">
+    <h2 style="font-size:1.8rem;margin-bottom:6px;">🔍 Keyword Screener</h2>
+    <p style="color:#8b949e;margin:0;">Upload Excel → Paste search strings → Screen papers → Download results</p>
+    </div>
+    """, unsafe_allow_html=True)
     st.markdown("---")
-    st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📋 File Naming Convention</h3></div>',unsafe_allow_html=True)
-    st.dataframe(pd.DataFrame({
-        "File":  ["springer_d1q1.csv","springer_d1q2.csv","acm_d1q1.bib","acm_d1q2.bib","scopus_d2q1.csv","scholar_d3q1.csv"],
-        "DB":    ["Springer","Springer","ACM","ACM","Elsevier/Scopus","Google Scholar"],
-        "Query": ["D1Q1","D1Q2","D1Q1","D1Q2","D2Q1","D3Q1"],
-        "Format":["CSV","CSV","BibTeX","BibTeX","CSV","CSV"],
-    }),use_container_width=True,hide_index=True)
-    st.info("💡 Query ID (d1q1, d2q2 etc.) must be in filename.")
+
+    def parse_search_string(raw):
+        """Parse multi-query string into list of AND-groups. Queries split by line with just '+'."""
+        import re as _re
+        queries = []
+        # Split queries by '+' on its own line
+        blocks = _re.split(r'(?m)^\s*\+\s*$', raw.strip())
+        for block in blocks:
+            block = block.strip()
+            if not block: continue
+            and_parts = _re.split(r'\bAND\b', block, flags=_re.IGNORECASE)
+            or_groups = []
+            for part in and_parts:
+                part = part.strip()
+                part = _re.sub(r'^\(|\)$', '', part).strip()
+                # Extract quoted and unquoted terms
+                found = _re.findall(r'"([^"]+)"|([A-Za-z][A-Za-z0-9_\-]*)', part)
+                terms = []
+                for quoted, unquoted in found:
+                    t = (quoted or unquoted).strip().lower()
+                    if t and t not in ('or','and'): terms.append(t)
+                if terms: or_groups.append(terms)
+            if or_groups: queries.append(or_groups)
+        return queries
+
+    def paper_matches(paper, queries):
+        """Returns (matched: bool, matched_terms: list). Any query (OR between queries) can match."""
+        title    = (paper.get("title","") or "").lower()
+        abstract = (paper.get("abstract","") or "").lower()
+        text     = title + " " + abstract
+        for query in queries:
+            query_ok = True
+            hits = []
+            for or_group in query:
+                group_ok = False
+                for term in or_group:
+                    if term in text:
+                        group_ok = True
+                        hits.append(term)
+                        break
+                if not group_ok:
+                    query_ok = False
+                    break
+            if query_ok:
+                return True, list(set(hits))
+        return False, []
+
+    col_l, col_r = st.columns([1,1])
+    with col_l:
+        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📤 Upload Screening Excel</h3></div>', unsafe_allow_html=True)
+        screener_xl = st.file_uploader("Upload Excel (.xlsx)", type=["xlsx"], key="screener_upload")
+
+    with col_r:
+        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">🔤 Search Strings</h3><p style="color:#8b949e;font-size:0.85rem;margin-bottom:8px;">Separate multiple queries with a line containing just <code>+</code></p></div>', unsafe_allow_html=True)
+        search_input = st.text_area("Search strings", value="", height=220,
+            placeholder='("data standards" OR "standardization")\nAND ("machine-readable" OR "AI-ready")\nAND ("large language models" OR LLM)\n+\n("machine-readable standards")\nAND (metadata OR ontology)\nAND (automation OR compliance)',
+            label_visibility="collapsed", key="search_input")
+
+    if screener_xl and search_input.strip():
+        parsed = parse_search_string(search_input)
+        if not parsed:
+            st.error("Could not parse search strings — check format.")
+        else:
+            with st.expander(f"✅ Parsed {len(parsed)} quer{'y' if len(parsed)==1 else 'ies'} — verify"):
+                for qi, q in enumerate(parsed, 1):
+                    st.markdown(f"**Query {qi}:**")
+                    for gi, grp in enumerate(q, 1):
+                        st.markdown(f"  AND-group {gi}: `{' OR '.join(grp)}`")
+            st.markdown("---")
+
+            if st.button("🔍 Screen Papers", type="primary", use_container_width=True, key="screen_btn"):
+                import openpyxl
+                from openpyxl.styles import PatternFill
+                INC = PatternFill("solid", start_color="D5E8D4")
+                EXC = PatternFill("solid", start_color="FFE0E0")
+
+                wb = openpyxl.load_workbook(io.BytesIO(screener_xl.read()))
+                inc_tot = exc_tot = skip_tot = 0
+
+                for sname in wb.sheetnames:
+                    if "Screening_Sheet" not in sname: continue
+                    ws = wb[sname]
+                    hdrs = {str(c.value or "").strip(): c.column for c in ws[1]}
+                    tc = hdrs.get("Title")
+                    ac = hdrs.get("Abstract") or hdrs.get("Abstract (snippet)")
+                    sc = hdrs.get("Screening Status")
+                    rc = hdrs.get("Exclusion Reason")
+                    nc = hdrs.get("Notes")
+                    if not tc or not sc: continue
+
+                    prog = st.progress(0); stat = st.empty()
+                    total = ws.max_row - 1
+
+                    for ri in range(2, ws.max_row+1):
+                        status = str(ws.cell(ri, sc).value or "").strip()
+                        if status == "Exclude":
+                            skip_tot += 1
+                            prog.progress(min((ri-1)/max(total,1),1.0)); continue
+
+                        paper = {
+                            "title":    str(ws.cell(ri, tc).value or ""),
+                            "abstract": str(ws.cell(ri, ac).value or "") if ac else "",
+                        }
+                        matched, terms = paper_matches(paper, parsed)
+
+                        if matched:
+                            ws.cell(ri, sc).value = "Include"
+                            if nc:
+                                ex = str(ws.cell(ri, nc).value or "")
+                                ws.cell(ri, nc).value = (ex+" | " if ex else "") + f"Match: {', '.join(terms[:5])}"
+                            for ci in range(1, ws.max_column+1): ws.cell(ri, ci).fill = INC
+                            inc_tot += 1
+                        else:
+                            ws.cell(ri, sc).value = "Exclude"
+                            if rc: ws.cell(ri, rc).value = "E4"
+                            if nc:
+                                ex = str(ws.cell(ri, nc).value or "")
+                                ws.cell(ri, nc).value = (ex+" | " if ex else "") + "No keyword match"
+                            for ci in range(1, ws.max_column+1): ws.cell(ri, ci).fill = EXC
+                            exc_tot += 1
+
+                        prog.progress(min((ri-1)/max(total,1),1.0))
+                        stat.text(f"Row {ri-1}/{total}...")
+
+                    prog.progress(1.0); stat.empty()
+
+                st.markdown("---")
+                c1,c2,c3,c4 = st.columns(4)
+                with c1: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#3fb950">{inc_tot}</div><div class="stat-lbl">✅ Included</div></div>', unsafe_allow_html=True)
+                with c2: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#f85149">{exc_tot}</div><div class="stat-lbl">❌ Excluded E4</div></div>', unsafe_allow_html=True)
+                with c3: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#8b949e">{skip_tot}</div><div class="stat-lbl">⏭️ Skipped</div></div>', unsafe_allow_html=True)
+                with c4: st.markdown(f'<div class="stat-box"><div class="stat-num">{inc_tot+exc_tot+skip_tot}</div><div class="stat-lbl">Total</div></div>', unsafe_allow_html=True)
+                st.markdown('<div class="warn-box">🟢 Green = keyword match in title/abstract &nbsp;|&nbsp; 🔴 Red = no match (E4) &nbsp;|&nbsp; Already excluded rows skipped</div>', unsafe_allow_html=True)
+
+                buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+                st.download_button("📥 Download Screened Excel", data=buf.read(),
+                    file_name=f"screened_{datetime.now():%Y%m%d_%H%M}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True, type="primary", key="dl_screened")
+
+    elif screener_xl and not search_input.strip():
+        st.info("Paste your search strings on the right.")
+    else:
+        st.markdown("""
+        <div class="sr-card"><h3 style="margin-top:0;">📋 How to use</h3>
+        <ol style="color:#8b949e;line-height:2.2;">
+        <li>Run <b>File Importer tab</b> → download Excel</li>
+        <li>Upload that Excel here</li>
+        <li>Paste search strings (separate queries with a line containing just <code>+</code>)</li>
+        <li>Click <b>Screen Papers</b></li>
+        <li>App checks title + abstract → Include / Exclude (E4)</li>
+        <li>Download updated Excel</li>
+        </ol>
+        <p style="color:#8b949e;font-size:0.85rem;">Already auto-excluded papers are skipped. Include = any query matched fully (all AND-groups satisfied).</p>
+        </div>
+        """, unsafe_allow_html=True)
