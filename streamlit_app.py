@@ -1,7 +1,7 @@
 """
-Systematic Review — File Importer v6 (Maximum Automation)
+Systematic Review — File Importer v7 (Auto-Screening)
 3 Dimensions: D1 Standardization & AI, D2 Context Engineering, D3 Token Efficiency
-PRISMA 2020 + Webster & Watson Concept Matrix + Screening Columns + Word Template
+PRISMA 2020 + Auto E1/E2/E7 Screening + Webster & Watson Concept Matrix + Word Template
 """
 
 import streamlit as st
@@ -59,6 +59,7 @@ def parse_springer_csv(content, query_id):
                 "screening_status": "Pending",
                 "exclusion_reason": "",
                 "notes": "",
+                "auto_excluded": False,
             })
     except Exception as e:
         st.warning(f"Springer parse error: {e}")
@@ -83,6 +84,7 @@ def parse_scopus_csv(content, query_id):
                 "screening_status": "Pending",
                 "exclusion_reason": "",
                 "notes": "",
+                "auto_excluded": False,
             })
     except Exception as e:
         st.warning(f"Scopus parse error: {e}")
@@ -107,6 +109,7 @@ def parse_scopus_pop_csv(content, query_id):
                 "screening_status": "Pending",
                 "exclusion_reason": "",
                 "notes": "",
+                "auto_excluded": False,
             })
     except Exception as e:
         st.warning(f"Scopus PoP parse error: {e}")
@@ -131,6 +134,7 @@ def parse_scholar_csv(content, query_id):
                 "screening_status": "Pending",
                 "exclusion_reason": "",
                 "notes": "",
+                "auto_excluded": False,
             })
     except Exception as e:
         st.warning(f"Scholar parse error: {e}")
@@ -165,6 +169,7 @@ def parse_bib(content, query_id):
             "screening_status": "Pending",
             "exclusion_reason": "",
             "notes": "",
+            "auto_excluded": False,
         })
     return [p for p in papers if p["title"]]
 
@@ -207,6 +212,53 @@ def deduplicate(papers):
 
 def is_valid_year(y):
     return str(y).strip().isdigit() and 2015 <= int(str(y).strip()) <= 2026
+
+def is_english_text(text):
+    """Check if text is English. Returns (is_english, reason)"""
+    if not text or len(text.strip()) < 5:
+        return True, ""  # Too short to judge, assume English
+    non_ascii = sum(1 for c in text if ord(c) > 127)
+    ratio = non_ascii / len(text)
+    if ratio > 0.25:
+        return False, f"Non-ASCII ratio: {ratio:.1%}"
+    return True, ""
+
+def auto_screen_papers(papers):
+    """Auto-screen papers for E1 (year), E2 (language), E7 (insufficient detail)"""
+    auto_excluded = {"E1": 0, "E2": 0, "E7": 0}
+
+    for p in papers:
+        # Check E1: Year
+        year = str(p.get("year", "")).strip()
+        if not year or not year.isdigit() or not is_valid_year(year):
+            p["screening_status"] = "Exclude"
+            p["exclusion_reason"] = "E1"
+            p["notes"] = f"Auto-excluded: Year '{year}' is missing or outside 2015-2026"
+            p["auto_excluded"] = True
+            auto_excluded["E1"] += 1
+            continue
+
+        # Check E2: Language (title + source + abstract if available)
+        text_to_check = p.get("title", "") + " " + p.get("source", "") + " " + p.get("abstract", "")
+        is_eng, reason = is_english_text(text_to_check)
+        if not is_eng:
+            p["screening_status"] = "Exclude"
+            p["exclusion_reason"] = "E2"
+            p["notes"] = f"Auto-excluded: Not English. {reason}"
+            p["auto_excluded"] = True
+            auto_excluded["E2"] += 1
+            continue
+
+        # Check E7: Insufficient detail (no title or no authors)
+        if not p.get("title", "").strip() or not p.get("authors", "").strip():
+            p["screening_status"] = "Exclude"
+            p["exclusion_reason"] = "E7"
+            p["notes"] = "Auto-excluded: Missing title or authors"
+            p["auto_excluded"] = True
+            auto_excluded["E7"] += 1
+            continue
+
+    return papers, auto_excluded
 
 # ── Enhanced Abstract Fetching ──────────────────────────────────────────────
 
@@ -583,6 +635,7 @@ def build_dimension_excel(papers, stats, dupe_list, dimension_name, dimension_co
     W_FILL  = PatternFill("solid", start_color="FFF2CC")
     M_FILL  = PatternFill("solid", start_color="FFE0E0")
     D_FILL  = PatternFill("solid", start_color="E8EAF6")
+    AUTO_FILL = PatternFill("solid", start_color="E8F5E9")  # Light green for auto-excluded
     THIN    = Side(style="thin", color="BFBFBF")
     BDR     = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
     PH_CLR  = {"Identification":"D6E4F0","Screening":"D5E8D4","Eligibility":"FFF2CC","Included":"FCE4D6"}
@@ -594,6 +647,17 @@ def build_dimension_excel(papers, stats, dupe_list, dimension_name, dimension_co
         return None
 
     main_papers  = dim_papers
+
+    # Count auto-exclusions
+    auto_e1 = sum(1 for p in dim_papers if p.get("exclusion_reason") == "E1")
+    auto_e2 = sum(1 for p in dim_papers if p.get("exclusion_reason") == "E2")
+    auto_e7 = sum(1 for p in dim_papers if p.get("exclusion_reason") == "E7")
+    auto_total = auto_e1 + auto_e2 + auto_e7
+
+    # Papers needing manual screening (still Pending)
+    manual_screen = [p for p in dim_papers if p.get("screening_status") == "Pending"]
+
+    # Missing year/DOI (already handled by auto-screening, but keep for reference)
     missing_year = [p for p in dim_papers if not str(p.get("year", "")).strip().isdigit() or not is_valid_year(p.get("year", ""))]
     missing_doi  = [p for p in dim_papers if not p.get("doi", "").strip()]
 
@@ -627,6 +691,8 @@ def build_dimension_excel(papers, stats, dupe_list, dimension_name, dimension_co
         for ri, p in enumerate(paper_list, start_row+1):
             if row_fill_fn:
                 fill = row_fill_fn(p)
+            elif p.get("auto_excluded"):
+                fill = AUTO_FILL
             else:
                 fill = PatternFill("solid", start_color="FFFFFF")
 
@@ -677,6 +743,7 @@ def build_dimension_excel(papers, stats, dupe_list, dimension_name, dimension_co
     total_raw = len(dim_papers) + len(dim_dupes)
     total_dupes = len(dim_dupes)
     after_dedup = len(dim_papers)
+    after_auto_screen = len(manual_screen)
 
     hdrs = ["Phase", "Step", "Database", "Query ID", "n (raw)", "n (after filter)", "Notes"]
     wids = [18, 42, 18, 12, 12, 16, 50]
@@ -693,10 +760,11 @@ def build_dimension_excel(papers, stats, dupe_list, dimension_name, dimension_co
         ["Identification", f"Records identified: {dimension_name}", "All", "ALL", total_raw, "", "Sum of all DB results for this dimension"],
         ["Identification", "Duplicate records removed", "All", "ALL", total_dupes, "", "See Duplicates_Removed sheet"],
         ["Identification", "Records after deduplication", "All", "ALL", after_dedup, "", ""],
-        ["Screening", "Records screened (title/abstract)", "All", "ALL", after_dedup, "", "Manual screening required"],
-        ["Screening", "Missing year - manual check", "All", "ALL", len(missing_year), "", "See Missing_Year sheet"],
-        ["Screening", "Missing DOI - manual check", "All", "ALL", len(missing_doi), "", "See Missing_DOI sheet"],
-        ["Screening", "Records with year + DOI (main)", "All", "ALL", len(main_papers), "", "See Screening_Sheet"],
+        ["Screening", "Auto-excluded: E1 (invalid year)", "All", "ALL", auto_e1, "", "Auto-detected missing/invalid year"],
+        ["Screening", "Auto-excluded: E2 (not English)", "All", "ALL", auto_e2, "", "Auto-detected non-English title/abstract"],
+        ["Screening", "Auto-excluded: E7 (insufficient detail)", "All", "ALL", auto_e7, "", "Auto-detected missing title/authors"],
+        ["Screening", "Records after auto-screening", "All", "ALL", after_auto_screen, "", "Papers needing manual review"],
+        ["Screening", "Records screened (title/abstract)", "All", "ALL", after_auto_screen, "", "Manual screening required"],
         ["Screening", "Records excluded - title screen", "All", "ALL", "", "", "Fill after manual screening"],
         ["Screening", "Records excluded - abstract", "All", "ALL", "", "", "Fill after manual screening"],
         ["Screening", "Reports sought for retrieval", "All", "ALL", "", "", ""],
@@ -709,6 +777,8 @@ def build_dimension_excel(papers, stats, dupe_list, dimension_name, dimension_co
         fill = PatternFill("solid", start_color=PH_CLR.get(row[0], "FFFFFF"))
         if "missing" in str(row[1]).lower() or "duplicate" in str(row[1]).lower():
             fill = W_FILL
+        if "auto-excluded" in str(row[1]).lower():
+            fill = AUTO_FILL
         for ci, val in enumerate(row, 2):
             c = ws.cell(row=ri, column=ci, value=val)
             c.fill = fill
@@ -720,6 +790,15 @@ def build_dimension_excel(papers, stats, dupe_list, dimension_name, dimension_co
     ws2 = wb.create_sheet("Screening_Sheet")
     write_screen(ws2, main_papers)
 
+    # Add legend for colors
+    ws2["A" + str(len(main_papers) + 3)].value = "Legend:"
+    ws2["A" + str(len(main_papers) + 3)].font = Font(bold=True, name="Arial", size=9)
+    ws2["B" + str(len(main_papers) + 3)].value = "Light Green = Auto-excluded (E1/E2/E7)"
+    ws2["B" + str(len(main_papers) + 3)].fill = AUTO_FILL
+    ws2["B" + str(len(main_papers) + 3)].font = Font(name="Arial", size=9)
+    ws2["B" + str(len(main_papers) + 4)].value = "White = Needs manual screening"
+    ws2["B" + str(len(main_papers) + 4)].font = Font(name="Arial", size=9)
+
     # ── Sheet 3: Duplicates Removed ───────────────────────────────────────────
     ws_dup = wb.create_sheet("Duplicates_Removed")
     ws_dup["A1"].value = f"Duplicates removed ({len(dim_dupes)}) — verify deduplication is correct"
@@ -730,7 +809,7 @@ def build_dimension_excel(papers, stats, dupe_list, dimension_name, dimension_co
 
     # ── Sheet 4: Missing Year ─────────────────────────────────────────────────
     ws_my = wb.create_sheet("Missing_Year")
-    ws_my["A1"].value = f"Missing/invalid year ({len(missing_year)}) — verify manually"
+    ws_my["A1"].value = f"Missing/invalid year ({len(missing_year)}) — already auto-excluded with E1"
     ws_my["A1"].font = Font(bold=True, size=12, color="7F6000", name="Arial")
     ws_my.merge_cells(f"A1:{get_column_letter(len(SCREEN_COLS))}1")
     ws_my.row_dimensions[1].height = 20
@@ -738,7 +817,7 @@ def build_dimension_excel(papers, stats, dupe_list, dimension_name, dimension_co
 
     # ── Sheet 5: Missing DOI ──────────────────────────────────────────────────
     ws_md = wb.create_sheet("Missing_DOI")
-    ws_md["A1"].value = f"Missing DOI ({len(missing_doi)}) — add DOI manually then move to Screening_Sheet"
+    ws_md["A1"].value = f"Missing DOI ({len(missing_doi)}) — check if full text accessible"
     ws_md["A1"].font = Font(bold=True, size=12, color="8B1A1A", name="Arial")
     ws_md.merge_cells(f"A1:{get_column_letter(len(SCREEN_COLS))}1")
     ws_md.row_dimensions[1].height = 20
@@ -828,6 +907,10 @@ def build_dimension_excel(papers, stats, dupe_list, dimension_name, dimension_co
         c.fill = PatternFill("solid", start_color=ecolors[ri-4])
         c.border = BDR
         ws4.row_dimensions[ri].height = 22
+
+    # Add auto-exclusion note
+    ws4["B13"].value = "Note: E1, E2, E7 are auto-detected by the script. E3, E4, E5, E6, E8 require manual screening."
+    ws4["B13"].font = Font(italic=True, name="Arial", size=9, color="595959")
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -934,6 +1017,9 @@ def generate_word_template():
     doc.add_paragraph('Papers were excluded based on the following criteria:')
     for crit in EXCLUSION_CRITERIA:
         doc.add_paragraph(f'• {crit}', style='List Bullet')
+    doc.add_paragraph()
+    doc.add_paragraph('Note: E1 (invalid year), E2 (not English), and E7 (insufficient detail) were auto-detected by the screening script. '
+                     'E3, E4, E5, E6, and E8 required manual screening.')
 
     doc.add_heading('2.4 Analysis Method', level=2)
     doc.add_paragraph(
@@ -1192,7 +1278,7 @@ st.markdown("""
 <div style="text-align: center; padding: 20px 0 30px 0;">
     <h1 style="font-size: 2.5rem; margin-bottom: 8px;">🔬 Systematic Review Bot</h1>
     <p style="color: #8b949e; font-size: 1.1rem; margin: 0;">
-        Upload CSV/BIB files → Parse → Fetch Abstracts → Generate 3 Dimension Workbooks + Word Template
+        Upload CSV/BIB files → Auto-Screen (E1/E2/E7) → Fetch Abstracts → Generate 3 Dimension Workbooks + Word Template
     </p>
 </div>
 """, unsafe_allow_html=True)
@@ -1250,28 +1336,45 @@ if uploaded:
 
     unique, dupe_list = deduplicate(all_papers)
 
-    # Filter non-English papers
-    def likely_english(p):
-        text = (p.get("title", "") + " " + p.get("source", ""))
-        if not text.strip(): 
-            return True
-        non_ascii = sum(1 for c in text if ord(c) > 127)
-        return (non_ascii / max(len(text), 1)) < 0.25
+    # ── Auto-Screening (E1, E2, E7) ──────────────────────────────────────────
+    st.markdown("""
+    <div class="sr-card">
+        <h3 style="margin-top: 0;">🤖 Step 2 — Auto-Screening</h3>
+        <p style="color: #8b949e; margin-bottom: 12px;">
+            Automatically detecting E1 (invalid year), E2 (not English), E7 (insufficient detail)
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    non_english = [p for p in unique if not likely_english(p)]
-    unique = [p for p in unique if likely_english(p)]
+    unique, auto_excluded = auto_screen_papers(unique)
 
     stats.update({
         "total_raw": len(all_papers),
         "duplicates": len(dupe_list),
         "after_dedup": len(unique),
-        "non_english": len(non_english)
+        "auto_e1": auto_excluded["E1"],
+        "auto_e2": auto_excluded["E2"],
+        "auto_e7": auto_excluded["E7"],
+        "auto_total": sum(auto_excluded.values()),
+        "manual_screen": len([p for p in unique if p.get("screening_status") == "Pending"])
     })
 
+    # Show auto-screening results
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: 
+        st.markdown(f'<div class="stat-box"><div class="stat-num">{auto_excluded["E1"]}</div><div class="stat-lbl">Auto E1 (Year)</div></div>', unsafe_allow_html=True)
+    with c2: 
+        st.markdown(f'<div class="stat-box"><div class="stat-num">{auto_excluded["E2"]}</div><div class="stat-lbl">Auto E2 (Language)</div></div>', unsafe_allow_html=True)
+    with c3: 
+        st.markdown(f'<div class="stat-box"><div class="stat-num">{auto_excluded["E7"]}</div><div class="stat-lbl">Auto E7 (Detail)</div></div>', unsafe_allow_html=True)
+    with c4:
+        st.markdown(f'<div class="stat-box"><div class="stat-num">{stats["manual_screen"]}</div><div class="stat-lbl">Need Manual Screen</div></div>', unsafe_allow_html=True)
+
     # ── Show parse log ────────────────────────────────────────────────────────
+    st.markdown("---")
     st.markdown("""
     <div class="sr-card">
-        <h3 style="margin-top: 0;">📊 Step 2 — Files Parsed</h3>
+        <h3 style="margin-top: 0;">📊 Step 3 — Files Parsed</h3>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1283,7 +1386,7 @@ if uploaded:
     st.markdown("---")
     st.markdown("""
     <div class="sr-card">
-        <h3 style="margin-top: 0;">📈 Step 3 — Summary by Dimension</h3>
+        <h3 style="margin-top: 0;">📈 Step 4 — Summary by Dimension</h3>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1302,26 +1405,17 @@ if uploaded:
         summary = " / ".join(f"{k}:{v}" for k, v in sorted(d_counts.items()))
         st.markdown(f'<div class="stat-box"><div class="stat-num" style="font-size:1.1rem">{summary}</div><div class="stat-lbl">By Dimension</div></div>', unsafe_allow_html=True)
 
-    # Pre-compute missing lists for display
-    missing_year_pre = [p for p in unique if not str(p.get("year", "")).strip().isdigit() or not is_valid_year(p.get("year", ""))]
-    missing_doi_pre = [p for p in unique if not p.get("doi", "").strip()]
-
-    if missing_year_pre:
-        st.markdown(f'<div class="warn-box">⚠️ <b>{len(missing_year_pre)} papers</b> missing year → flagged in Missing_Year sheet</div>', unsafe_allow_html=True)
-    if missing_doi_pre:
-        st.markdown(f'<div class="warn-box">⚠️ <b>{len(missing_doi_pre)} papers</b> missing DOI → flagged in Missing_DOI sheet</div>', unsafe_allow_html=True)
-
     # ── GENERATE BUTTON ───────────────────────────────────────────────────────
     st.markdown("---")
 
-    need_abstract = [p for p in unique if p.get("doi", "").strip() or p.get("url", "").strip()]
+    need_abstract = [p for p in unique if p.get("screening_status") == "Pending" and (p.get("doi", "").strip() or p.get("url", "").strip())]
     est_mins = max(1, len(need_abstract) // 15)
 
     st.markdown(f"""
     <div class="sr-card">
-        <h3 style="margin-top: 0;">🚀 Step 4 — Generate Workbooks</h3>
+        <h3 style="margin-top: 0;">🚀 Step 5 — Generate Workbooks</h3>
         <p style="color: #8b949e; margin-bottom: 0;">
-            Will fetch abstracts for <b>{len(need_abstract)} papers</b> and generate 3 dimension-specific Excel files + Word template (~{est_mins} min)
+            Will fetch abstracts for <b>{len(need_abstract)} papers</b> needing manual review and generate 3 dimension-specific Excel files + Word template (~{est_mins} min)
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -1347,7 +1441,7 @@ if uploaded:
                 t0 = time.time()
                 total = len(need_abstract)
 
-                status_text.markdown("🔄 **Fetching abstracts...**")
+                status_text.markdown("🔄 **Fetching abstracts for manually-screened papers...**")
 
                 pdf_count = sum(1 for p in need_abstract if is_pdf_url(p.get("url", "")))
                 blocked_count = sum(1 for p in need_abstract if is_blocked_site(p.get("url", "")))
@@ -1437,7 +1531,7 @@ if uploaded:
         st.markdown("---")
         st.markdown("""
         <div class="sr-card">
-            <h3 style="margin-top: 0;">📥 Step 5 — Download</h3>
+            <h3 style="margin-top: 0;">📥 Step 6 — Download</h3>
         </div>
         """, unsafe_allow_html=True)
 
@@ -1446,7 +1540,7 @@ if uploaded:
         for dim_code in ["D1", "D2", "D3"]:
             if f"excel_{dim_code}" in st.session_state:
                 dim_name = DIMENSION_NAMES[dim_code]
-                st.markdown(f'<div class="sheet-card"><b>{dim_name}</b> — PRISMA Flow + Screening + Concept Matrix</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="sheet-card"><b>{dim_name}</b> — PRISMA Flow + Auto-Screened + Manual Screening + Concept Matrix</div>', unsafe_allow_html=True)
                 st.download_button(
                     f"📥 Download {dim_name}",
                     data=st.session_state[f"excel_{dim_code}"],
@@ -1470,7 +1564,7 @@ if uploaded:
         n = st.session_state.get("total_papers", 0)
         a = st.session_state.get("abstracts_filled", 0)
         d = st.session_state.get("dupe_count", 0)
-        st.success(f"✅ {n} total papers · {a} with abstract · {d} dupes removed")
+        st.success(f"✅ {n} total papers · {a} with abstract · {d} dupes removed · {stats['auto_total']} auto-excluded (E1/E2/E7)")
 
 else:
     st.markdown("---")
