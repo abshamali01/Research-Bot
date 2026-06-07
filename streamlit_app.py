@@ -1038,19 +1038,42 @@ with tab2:
     }
 
     def extract_keywords(raw):
-        """Extract all terms from search string — ignores AND/OR/+ logic entirely."""
-        quoted = re.findall(r'"([^"]+)"', raw)
-        remainder = re.sub(r'"[^"]+"', ' ', raw)
-        remainder = re.sub(r'\b(AND|OR|NOT)\b', ' ', remainder, flags=re.IGNORECASE)
-        remainder = re.sub(r'[+\(\)\n]', ' ', remainder)
-        stopwords = {'the','and','or','not','in','of','for','to','a','an','is','are','with','by','on','at','from'}
-        singles = [w.strip().lower() for w in remainder.split()
-                   if len(w.strip()) >= 3 and w.strip().lower() not in stopwords]
-        seen = set(); unique = []
+        """
+        Extract all keywords from search string.
+        Strips AND/OR/NOT/+ completely. Handles malformed/unclosed quotes.
+        """
+        cleaned = raw
+        # Remove + separator lines
+        cleaned = re.sub(r'(?m)^\s*\+\s*$', ' ', cleaned)
+        # Remove AND/OR/NOT operators
+        cleaned = re.sub(r'\bAND\b', ' ', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\bOR\b',  ' ', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\bNOT\b', ' ', cleaned, flags=re.IGNORECASE)
+        # Remove parens, +, newlines
+        cleaned = re.sub(r'[+()\n\r]', ' ', cleaned)
+
+        # Extract valid quoted phrases (2+ chars)
+        quoted = []
+        for m in re.finditer(r'"([^"]{2,})"', cleaned):
+            t = m.group(1).strip().lower()
+            if t: quoted.append(t)
+
+        # Remove quoted content + stray quotes, get single tokens
+        no_quotes = re.sub(r'"[^"]*"', ' ', cleaned).replace('"', ' ')
+        singles = []
+        for token in no_quotes.split():
+            t = token.strip('.,;:-()')
+            if not t or len(t) < 2: continue
+            tl = t.lower()
+            if tl in ('and','or','not'): continue
+            singles.append(tl)
+
+        # Deduplicate preserving order
+        seen = set(); result = []
         for t in quoted + singles:
-            t = t.strip().lower()
-            if t and t not in seen: seen.add(t); unique.append(t)
-        return unique
+            t = t.strip()
+            if t and t not in seen: seen.add(t); result.append(t)
+        return result
 
     def expand_keywords(terms):
         """Add US/UK spelling variants automatically."""
@@ -1090,11 +1113,21 @@ with tab2:
         if not keywords:
             st.error("No keywords found — check your search strings.")
         else:
-            with st.expander(f"✅ {len(keywords)} keywords extracted (with US/UK variants) — verify"):
-                st.markdown(", ".join(f"`{k}`" for k in keywords))
-            st.markdown("---")
+            # Show keywords with Parse button step
+            col_parse, _ = st.columns([1,2])
+            with col_parse:
+                parse_clicked = st.button("✅ Parse Keywords", use_container_width=True, key="parse_btn")
+            
+            if parse_clicked or st.session_state.get("kw_parsed"):
+                st.session_state["kw_parsed"] = True
+                st.session_state["current_keywords"] = keywords
+                with st.expander(f"📋 {len(keywords)} keywords extracted (with US/UK variants) — click to verify", expanded=True):
+                    st.markdown(", ".join(f"`{k}`" for k in keywords))
+                    st.caption("If a keyword looks wrong, fix your search string above and click Parse again.")
+                st.markdown("---")
 
-            if st.button("🔍 Screen Papers", type="primary", use_container_width=True, key="screen_btn"):
+            if st.session_state.get("kw_parsed") and st.button("🔍 Screen Papers", type="primary", use_container_width=True, key="screen_btn"):
+                keywords = st.session_state.get("current_keywords", keywords)
                 import openpyxl
                 from openpyxl.styles import PatternFill
                 INC = PatternFill("solid", start_color="D5E8D4")
