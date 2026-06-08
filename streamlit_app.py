@@ -843,8 +843,7 @@ with tab1:
         unique, dupe_list = deduplicate(all_papers)
 
         # Auto-screen silently (no UI block)
-        with st.spinner("Processing files..."):
-            unique, auto_counts = auto_screen(unique)
+        unique, auto_counts = auto_screen(unique)
 
         pending = [p for p in unique if p.get("screening_status")=="Pending"]
         stats.update({
@@ -853,7 +852,6 @@ with tab1:
         })
 
         # Step 2: Parse log
-        st.markdown("---")
         st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📊 Step 2 — Files Parsed</h3></div>',unsafe_allow_html=True)
         for fname,db,qid,n in parse_log:
             db_cls={"Springer":"springer","ACM":"acm","Elsevier/Scopus":"scopus","Google Scholar":"scholar"}.get(db,"springer")
