@@ -809,9 +809,7 @@ with tab1:
     with col_rst1:
         st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
         if st.button("🔄 Reset / New Run", key="reset_tab1", use_container_width=True):
-            for key in list(st.session_state.keys()):
-                if key.startswith("excel_") or key in ["excel_ready","word_bytes","word_fname","total","dupes","abstracts","auto_total"]:
-                    del st.session_state[key]
+            st.session_state.clear()
             st.rerun()
     st.caption("Supports: Springer CSV · Scopus CSV · Google Scholar CSV (Publish or Perish) · ACM BibTeX")
 
@@ -844,10 +842,8 @@ with tab1:
 
         unique, dupe_list = deduplicate(all_papers)
 
-        # Step 2: Auto-screening (with year recovery)
-        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">🤖 Step 2 — Auto-Screening</h3><p style="color:#8b949e;margin-bottom:8px;">Auto-detecting E1/E2/E7. For missing year with DOI → API recovery attempted first.</p></div>', unsafe_allow_html=True)
-
-        with st.spinner("Auto-screening papers (recovering missing years via API)..."):
+        # Auto-screen silently (no UI block)
+        with st.spinner("Processing files..."):
             unique, auto_counts = auto_screen(unique)
 
         pending = [p for p in unique if p.get("screening_status")=="Pending"]
@@ -856,24 +852,16 @@ with tab1:
             "after_dedup":len(unique), "auto_total":sum(v for k,v in auto_counts.items() if k!="E1_recovered"),
         })
 
-        c1,c2,c3,c4=st.columns(4)
-        with c1: st.markdown(f'<div class="stat-box"><div class="stat-num">{auto_counts["E1"]}</div><div class="stat-lbl">Auto E1 (Year)</div></div>',unsafe_allow_html=True)
-        with c2: st.markdown(f'<div class="stat-box"><div class="stat-num">{auto_counts["E2"]}</div><div class="stat-lbl">Auto E2 (Language)</div></div>',unsafe_allow_html=True)
-        with c3: st.markdown(f'<div class="stat-box"><div class="stat-num">{auto_counts["E7"]}</div><div class="stat-lbl">Auto E7 (Detail)</div></div>',unsafe_allow_html=True)
-        with c4: st.markdown(f'<div class="stat-box"><div class="stat-num">{len(pending)}</div><div class="stat-lbl">Need Manual Screen</div></div>',unsafe_allow_html=True)
-        if auto_counts["E1_recovered"] > 0:
-            st.markdown(f'<div class="warn-box">ℹ️ <b>{auto_counts["E1_recovered"]} papers</b> had missing year — recovered from API and kept for screening</div>',unsafe_allow_html=True)
-
-        # Step 3: Parse log
+        # Step 2: Parse log
         st.markdown("---")
-        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📊 Step 3 — Files Parsed</h3></div>',unsafe_allow_html=True)
+        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📊 Step 2 — Files Parsed</h3></div>',unsafe_allow_html=True)
         for fname,db,qid,n in parse_log:
             db_cls={"Springer":"springer","ACM":"acm","Elsevier/Scopus":"scopus","Google Scholar":"scholar"}.get(db,"springer")
             st.markdown(f"<div style='margin:4px 0;'><code>{fname}</code> → <span class='tag tag-{db_cls}'>{db}</span> <code>{qid}</code> → <b>{n} papers</b></div>",unsafe_allow_html=True)
 
-        # Step 4: Summary
+        # Step 3: Summary
         st.markdown("---")
-        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📈 Step 4 — Summary by Dimension</h3></div>',unsafe_allow_html=True)
+        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📈 Step 3 — Summary by Dimension</h3></div>',unsafe_allow_html=True)
         c1,c2,c3,c4=st.columns(4)
         with c1: st.markdown(f'<div class="stat-box"><div class="stat-num">{stats["total_raw"]}</div><div class="stat-lbl">Total Raw</div></div>',unsafe_allow_html=True)
         with c2: st.markdown(f'<div class="stat-box"><div class="stat-num">{len(dupe_list)}</div><div class="stat-lbl">Duplicates Removed</div></div>',unsafe_allow_html=True)
@@ -888,7 +876,7 @@ with tab1:
         st.markdown("---")
         need_abstract=[p for p in pending if p.get("doi","").strip() or p.get("url","").strip()]
         est_mins=max(1,len(need_abstract)//15)
-        st.markdown(f'<div class="sr-card"><h3 style="margin-top:0;">🚀 Step 5 — Generate Workbooks</h3><p style="color:#8b949e;margin-bottom:0;">Fetch abstracts for <b>{len(need_abstract)} pending papers</b> · post-fetch language check · 3 Excel workbooks + Word (~{est_mins} min)</p></div>',unsafe_allow_html=True)
+        st.markdown(f'<div class="sr-card"><h3 style="margin-top:0;">🚀 Step 4 — Generate Workbooks</h3><p style="color:#8b949e;margin-bottom:0;">Fetch abstracts for <b>{len(need_abstract)} pending papers</b> · post-fetch language check · 3 Excel workbooks + Word (~{est_mins} min)</p></div>',unsafe_allow_html=True)
 
         fetch_toggle=st.checkbox("Fetch abstracts automatically",value=True)
         with st.expander("⚙️ Advanced Options"):
@@ -968,7 +956,7 @@ with tab1:
         # Step 6: Download
         if st.session_state.get("excel_ready"):
             st.markdown("---")
-            st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📥 Step 6 — Download</h3></div>',unsafe_allow_html=True)
+            st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📥 Step 5 — Download</h3></div>',unsafe_allow_html=True)
             st.markdown("#### 📊 Dimension Workbooks")
             for dim_code in ["D1","D2","D3"]:
                 if f"excel_{dim_code}" in st.session_state:
@@ -1127,8 +1115,7 @@ with tab2:
         with col_reset:
             st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
             if st.button("🔄 Reset / New File", key="reset_screener", use_container_width=True):
-                for key in ["kw_parsed","current_keywords","screener_upload"]:
-                    if key in st.session_state: del st.session_state[key]
+                st.session_state.clear()
                 st.rerun()
         screener_xl = st.file_uploader("Upload Excel (.xlsx)", type=["xlsx"], key="screener_upload")
 
@@ -1175,7 +1162,7 @@ with tab2:
                 inc_tot = exc_tot = skip_tot = pend_tot = 0
 
                 for sname in wb.sheetnames:
-                    if "Screening_Sheet" not in sname: continue
+                    if "Screening_Sheet" not in sname and "Google_Scholar_Screening" not in sname: continue
                     ws = wb[sname]
                     hdrs = {str(c.value or "").strip(): c.column for c in ws[1]}
                     tc = hdrs.get("Title")
