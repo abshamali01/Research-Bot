@@ -31,6 +31,7 @@ EXCLUSION_CRITERIA = [
     "E6: Full text not accessible",
     "E7: Abstract only / insufficient detail",
     "E8: Not peer-reviewed",
+    "E9: Paid / not open access",
 ]
 
 # ── Parsers ───────────────────────────────────────────────────────────────────
@@ -560,7 +561,7 @@ def build_dimension_excel(papers, dupe_list, dim_code, dim_name):
         if plist:
             dv1=DataValidation(type="list",formula1='"Pending,Include,Exclude"',allow_blank=True)
             ws.add_data_validation(dv1); dv1.add(f'I{start+1}:I{start+len(plist)}')
-            dv2=DataValidation(type="list",formula1='"E1,E2,E3,E4,E5,E6,E7,E8,"',allow_blank=True)
+            dv2=DataValidation(type="list",formula1='"E1,E2,E3,E4,E5,E6,E7,E8,E9,"',allow_blank=True)
             ws.add_data_validation(dv2); dv2.add(f'J{start+1}:J{start+len(plist)}')
 
     # Sheet 1: PRISMA
@@ -679,11 +680,13 @@ def build_dimension_excel(papers, dupe_list, dim_code, dim_name):
     ws4=wb.create_sheet("Exclusion_Criteria")
     ws4["B2"].value=f"Exclusion Criteria (PRISMA) — {dim_name}"
     ws4["B2"].font=Font(bold=True,size=13,color="1F4E79",name="Arial"); ws4.column_dimensions["B"].width=65
-    ecolors=["FFE0E0","FFE0E0","FFF2CC","FFF2CC","D5E8D4","D5E8D4","D6E4F0","D6E4F0"]
+    ecolors=["FFE0E0","FFE0E0","FFF2CC","FFF2CC","D5E8D4","D5E8D4","D6E4F0","D6E4F0","F3E5F5"]
     for ri,crit in enumerate(EXCLUSION_CRITERIA,4):
         c=ws4.cell(row=ri,column=2,value=crit); c.font=Font(name="Arial",size=10)
-        c.fill=PatternFill("solid",start_color=ecolors[ri-4]); c.border=BDR; ws4.row_dimensions[ri].height=22
-    ws4["B13"].value="Note: E1, E2, E7 auto-detected. E2 also checked post-fetch on title+abstract. E3-E6, E8 require manual review."
+        cidx = ri-4
+        c.fill=PatternFill("solid",start_color=ecolors[cidx] if cidx < len(ecolors) else "FFFFFF")
+        c.border=BDR; ws4.row_dimensions[ri].height=22
+    ws4["B14"].value="Note: E1, E2, E7 auto-detected. E2 also checked post-fetch on title+abstract. E9 checked if URL/DOI requires payment. E3-E6, E8 require manual review."
     ws4["B13"].font=Font(italic=True,name="Arial",size=9,color="595959")
 
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
@@ -740,7 +743,7 @@ def generate_word():
     doc.add_heading('2.3 Exclusion Criteria', 2)
     doc.add_paragraph('Papers excluded based on:')
     for c in EXCLUSION_CRITERIA: add_bullet(c)
-    doc.add_paragraph('Note: E1, E2, E7 auto-detected by script. E2 also checked post-abstract-fetch. E3–E6, E8 required manual review.')
+    doc.add_paragraph('Note: E1, E2, E7 auto-detected by script. E2 also checked post-abstract-fetch. E9 = paid/not open access. E3–E6, E8 required manual review.')
 
     doc.add_heading('2.4 Analysis Method — Webster & Watson (2002)', 2)
     doc.add_paragraph('Concept matrix maps included papers to dimension-specific concepts to identify themes and gaps.')
@@ -819,7 +822,16 @@ with tab1:
     """, unsafe_allow_html=True)
     st.markdown("---")
 
-    st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📁 Step 1 — Upload Files</h3><p style="color:#8b949e;margin-bottom:12px;">Name files like <code>springer_d1q1.csv</code>, <code>acm_d1q2.bib</code>, <code>scopus_d2q1.csv</code>, <code>scholar_d3q1.csv</code></p></div>', unsafe_allow_html=True)
+    col_h1, col_rst1 = st.columns([4,1])
+    with col_h1:
+        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📁 Step 1 — Upload Files</h3><p style="color:#8b949e;margin-bottom:12px;">Name files like <code>springer_d1q1.csv</code>, <code>acm_d1q2.bib</code>, <code>scopus_d2q1.csv</code>, <code>scholar_d3q1.csv</code></p></div>', unsafe_allow_html=True)
+    with col_rst1:
+        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+        if st.button("🔄 Reset / New Run", key="reset_tab1", use_container_width=True):
+            for key in list(st.session_state.keys()):
+                if key.startswith("excel_") or key in ["excel_ready","word_bytes","word_fname","total","dupes","abstracts","auto_total"]:
+                    del st.session_state[key]
+            st.rerun()
     st.caption("Supports: Springer CSV · Scopus CSV · Google Scholar CSV (Publish or Perish) · ACM BibTeX")
 
     uploaded = st.file_uploader("Drop all files here", type=["csv","bib"],
@@ -1128,7 +1140,15 @@ with tab2:
 
     col_l, col_r = st.columns([1,1])
     with col_l:
-        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📤 Upload Screening Excel</h3></div>', unsafe_allow_html=True)
+        col_title, col_reset = st.columns([3,1])
+        with col_title:
+            st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📤 Upload Screening Excel</h3></div>', unsafe_allow_html=True)
+        with col_reset:
+            st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+            if st.button("🔄 Reset / New File", key="reset_screener", use_container_width=True):
+                for key in ["kw_parsed","current_keywords","screener_upload"]:
+                    if key in st.session_state: del st.session_state[key]
+                st.rerun()
         screener_xl = st.file_uploader("Upload Excel (.xlsx)", type=["xlsx"], key="screener_upload")
 
     with col_r:
@@ -1138,6 +1158,13 @@ with tab2:
             label_visibility="collapsed", key="search_input")
 
     if screener_xl and search_input.strip():
+        # Reset kw_parsed if file changes
+        file_id = screener_xl.name + str(screener_xl.size)
+        if st.session_state.get("screener_file_id") != file_id:
+            st.session_state["screener_file_id"] = file_id
+            st.session_state["kw_parsed"] = False
+            st.session_state.pop("current_keywords", None)
+
         raw_kw = extract_keywords(search_input)
         keywords = expand_keywords(raw_kw)
         if not keywords:
