@@ -579,7 +579,7 @@ def build_dimension_excel(papers, dupe_list, dim_code, dim_name):
     ws.row_dimensions[4].height=28
     rows=[
         ["Identification",f"Records identified: {dim_name}","All","ALL",len(dim_papers)+len(dim_dupes),"",""],
-        ["Identification","Duplicate records removed","All","ALL",len(dim_dupes),"","See Duplicates_Removed"],
+        ["Identification","Duplicate records removed","All","ALL",len(dim_dupes),"",""],
         ["Identification","Records after deduplication","All","ALL",len(dim_papers),"",""],
         ["Screening","Auto-excluded: E1 (invalid year)","All","ALL",auto_e1,"","Auto-detected"],
         ["Screening","Auto-excluded: E2 (not English)","All","ALL",auto_e2,"","Auto-detected (pre + post-fetch)"],
@@ -601,35 +601,16 @@ def build_dimension_excel(papers, dupe_list, dim_code, dim_name):
             c=ws.cell(row=ri,column=ci,value=val); c.fill=fill; c.border=BDR
             c.font=Font(name="Arial",size=9); c.alignment=Alignment(wrap_text=True,vertical="center")
 
-    # Sheet 2: Screening
-    ws2=wb.create_sheet("Screening_Sheet"); write_screen(ws2, dim_papers)
-    leg=len(dim_papers)+3
-    ws2[f"A{leg}"].value="Legend:"; ws2[f"A{leg}"].font=Font(bold=True,name="Arial",size=9)
-    ws2[f"B{leg}"].value="🟢 Green = Auto-excluded (E1/E2/E7) | White = Needs manual screening"
-    ws2[f"B{leg}"].font=Font(name="Arial",size=9)
+    # Sheet 2: Screening (non-Scholar papers)
+    non_scholar = [p for p in dim_papers if p.get("database","") != "Google Scholar"]
+    ws2=wb.create_sheet("Screening_Sheet"); write_screen(ws2, non_scholar)
 
-    # Sheet 3: Duplicates
-    ws_d=wb.create_sheet("Duplicates_Removed")
-    ws_d["A1"].value=f"Duplicates removed ({len(dim_dupes)}) — verify"
-    ws_d["A1"].font=Font(bold=True,size=12,color="2E4057",name="Arial")
-    ws_d.merge_cells(f"A1:{get_column_letter(len(COLS))}1"); ws_d.row_dimensions[1].height=20
-    write_screen(ws_d, dim_dupes, rfn=lambda p:D_FILL, start=2)
+    # Sheet 3: Google Scholar Screening
+    scholar_papers = [p for p in dim_papers if p.get("database","") == "Google Scholar"]
+    ws_gs=wb.create_sheet("Google_Scholar_Screening")
+    write_screen(ws_gs, scholar_papers)
 
-    # Sheet 4: Missing Year
-    ws_y=wb.create_sheet("Missing_Year")
-    ws_y["A1"].value=f"Missing/invalid year ({len(miss_year)}) — auto-excluded E1"
-    ws_y["A1"].font=Font(bold=True,size=12,color="7F6000",name="Arial")
-    ws_y.merge_cells(f"A1:{get_column_letter(len(COLS))}1"); ws_y.row_dimensions[1].height=20
-    write_screen(ws_y, miss_year, rfn=lambda p:W_FILL, start=2)
-
-    # Sheet 5: Missing DOI
-    ws_doi=wb.create_sheet("Missing_DOI")
-    ws_doi["A1"].value=f"Missing DOI ({len(miss_doi)}) — check full text"
-    ws_doi["A1"].font=Font(bold=True,size=12,color="8B1A1A",name="Arial")
-    ws_doi.merge_cells(f"A1:{get_column_letter(len(COLS))}1"); ws_doi.row_dimensions[1].height=20
-    write_screen(ws_doi, miss_doi, rfn=lambda p:M_FILL, start=2)
-
-    # Sheet 6: Concept Matrix
+    # Sheet 4: Concept Matrix
     ws3=wb.create_sheet("Concept_Matrix_W&W")
     ws3.column_dimensions["A"].width=3; ws3.column_dimensions["B"].width=4
     ws3["C2"].value=f"Webster & Watson (2002) Concept Matrix — {dim_name}"
