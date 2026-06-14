@@ -1,14 +1,15 @@
 """
-Systematic Review Bot v11
+Systematic Review Bot v12
 3 Dimensions: D1 Standardization & AI, D2 Context Engineering, D3 Token Efficiency
 PRISMA 2020 + Auto E1/E2/E7 + Year Recovery + Post-fetch Language Check + Word Template
 
-Updates in v11:
+Updates in v12:
 - Full Authors column
 - Recover missing authors from CrossRef, Semantic Scholar, OpenAlex, and publisher HTML
 - Keywords column
-- Extract keywords from CSV/BIB, CrossRef subjects, Semantic Scholar fieldsOfStudy,
-  OpenAlex concepts, publisher HTML meta tags, and official PDF "Keywords:" section
+- PDF authors extracted as full comma-separated list, e.g. "Kashif Imteyaz, Michael Muller, Claudia Flores-Saviaga, Saiph Savage"
+- PDF keywords extracted ONLY from an official heading such as "Keywords:", "Key words:", or "Index Terms:"
+- If no official keyword heading is found in the PDF, the Keywords cell remains empty
 - PDF upload support using PyMuPDF
 """
 
@@ -178,7 +179,7 @@ def parse_bib(content, qid):
 
         papers.append(_paper(
             title=gf("title", entry),
-            authors=gf("author", entry).replace(" and ", "; "),
+            authors=_normalize_authors_commas(gf("author", entry)),
             year=gf("year", entry),
             source=gf("booktitle", entry) or gf("journal", entry),
             doi=gf("doi", entry),
@@ -242,30 +243,55 @@ def _extract_pdf_abstract(text):
 
 def _extract_pdf_keywords(text):
     """
-    Extract the official author keywords written under/near the abstract.
-    Example:
-    Keywords: requirements engineering; Large Language Models (LLMs); BERT
+    Extract ONLY official keywords written under/near the abstract.
+
+    Accepted headings:
+    - Keywords:
+    - Keyword:
+    - Key words:
+    - Index Terms:
+
+    If this heading is not found, return empty string.
+    No AI/concept/API fallback is used for PDF keywords.
     """
     if not text:
         return ""
 
+    # Keep line structure because keyword heading is normally visible as a line/block.
+    t = text.replace("\r", "\n")
+    t = re.sub(r"[ \t]+", " ", t)
+
     patterns = [
-        r"\bKeywords?\b\s*[:\-]\s*(.*?)(?=\n\s*(?:1\.?\s+)?Introduction\b|\n\s*INTRODUCTION\b|\n\s*Categories and Subject Descriptors\b|\n\s*CCS Concepts\b|\n\s*©|\n\s*Copyright\b|\n\s*Received\b)",
-        r"\bKey words\b\s*[:\-]\s*(.*?)(?=\n\s*(?:1\.?\s+)?Introduction\b|\n\s*INTRODUCTION\b|\n\s*©|\n\s*Copyright\b)",
-        r"\bIndex Terms\b\s*[:\-]\s*(.*?)(?=\n\s*(?:1\.?\s+)?Introduction\b|\n\s*INTRODUCTION\b|\n\s*©|\n\s*Copyright\b)",
+        r"(?is)\bKeywords?\s*[:\-]\s*(.+?)(?=\n\s*(?:1\.?\s+)?Introduction\b|\n\s*INTRODUCTION\b|\n\s*I\.\s*INTRODUCTION\b|\n\s*Categories and Subject Descriptors\b|\n\s*CCS Concepts\b|\n\s*ACM Reference Format\b|\n\s*©|\n\s*Copyright\b|\n\s*Received\b)",
+        r"(?is)\bKey\s+words\s*[:\-]\s*(.+?)(?=\n\s*(?:1\.?\s+)?Introduction\b|\n\s*INTRODUCTION\b|\n\s*I\.\s*INTRODUCTION\b|\n\s*©|\n\s*Copyright\b)",
+        r"(?is)\bIndex\s+Terms\s*[:\-]\s*(.+?)(?=\n\s*(?:1\.?\s+)?Introduction\b|\n\s*INTRODUCTION\b|\n\s*I\.\s*INTRODUCTION\b|\n\s*©|\n\s*Copyright\b)",
     ]
 
     for pat in patterns:
-        m = re.search(pat, text, flags=re.I | re.S)
-        if m:
-            kw = m.group(1)
-            kw = re.sub(r"\s*\n\s*", " ", kw)
-            kw = re.sub(r"\s{2,}", " ", kw).strip(" .;:")
-            kw = re.sub(r"\s*[,|]\s*", "; ", kw)
-            kw = re.sub(r"\s*;\s*", "; ", kw)
-            # Avoid accidentally taking a whole introduction section
-            if 3 <= len(kw) <= 900:
-                return kw.strip(" ;")
+        m = re.search(pat, t)
+        if not m:
+            continue
+
+        kw = m.group(1)
+        kw = re.sub(r"\s*\n\s*", " ", kw)
+        kw = re.sub(r"\s{2,}", " ", kw).strip(" .;:")
+
+        # Stop if a section title accidentally enters the capture.
+        kw = re.split(
+            r"\b(?:Abstract|Introduction|Background|Methodology|Methods|Results|Conclusion|References)\b",
+            kw,
+            maxsplit=1,
+            flags=re.I
+        )[0].strip(" .;:")
+
+        # Normalize separators but keep author-provided wording.
+        kw = re.sub(r"\s*[,|]\s*", "; ", kw)
+        kw = re.sub(r"\s*;\s*", "; ", kw)
+        kw = kw.strip(" ;")
+
+        # Reject if too long because then it is probably not only keywords.
+        if 3 <= len(kw) <= 600:
+            return kw
 
     return ""
 
@@ -302,56 +328,77 @@ def _extract_title_from_pdf_lines(lines, meta_title=""):
 
 def _extract_authors_from_pdf_lines(lines, title="", doi_authors=""):
     """
-    First preference is DOI API authors. If unavailable, use a conservative first-page heuristic.
+    Prefer DOI/API authors. If unavailable, use first-page heuristic.
+    Output format:
+    Kashif Imteyaz, Michael Muller, Claudia Flores-Saviaga, Saiph Savage
     """
     if doi_authors:
-        return doi_authors
+        return _normalize_authors_commas(doi_authors)
 
     if not lines:
         return ""
 
-    # Take content before Abstract.
+    # Locate Abstract. Authors are normally between title and abstract.
     abstract_pos = None
     for i, ln in enumerate(lines):
-        if ln.strip().lower() == "abstract" or ln.strip().lower().startswith("abstract "):
+        clean = re.sub(r"\s+", " ", ln).strip().lower()
+        if clean == "abstract" or clean.startswith("abstract "):
             abstract_pos = i
             break
 
-    pre = lines[:abstract_pos] if abstract_pos else lines[:35]
+    pre = lines[:abstract_pos] if abstract_pos else lines[:45]
     pre = [re.sub(r"\s+", " ", x).strip() for x in pre if re.sub(r"\s+", " ", x).strip()]
 
-    # Remove title line and obvious non-author lines.
-    candidates = []
-    for ln in pre:
+    # Find title index if possible, then start after title.
+    start_idx = 0
+    if title:
+        for i, ln in enumerate(pre):
+            if ln.strip() == title.strip() or title.strip() in ln.strip():
+                start_idx = i + 1
+                break
+
+    block = pre[start_idx:start_idx + 12]
+
+    cleaned = []
+    for ln in block:
         low = ln.lower()
-        if title and ln.strip() == title.strip():
+
+        if low in ("abstract", "research article", "original article", "conference paper", "proceedings"):
             continue
-        if low in ("research article", "original article", "conference paper", "abstract"):
-            continue
-        if low.startswith(("doi", "http", "www", "received", "accepted", "published", "keywords")):
+        if low.startswith(("doi", "http", "www", "received", "accepted", "published", "keywords", "keyword")):
             continue
         if "@" in ln:
             continue
-        if re.search(r"\b(university|department|institute|school|faculty|laboratory|centre|center)\b", low):
+        if re.search(r"\b(university|department|institute|school|faculty|laboratory|lab |centre|center|college|campus|street|avenue|road|city|country)\b", low):
             continue
-        if len(ln) < 4 or len(ln) > 250:
+        if re.search(r"\b(abstract|introduction|copyright|permission|licensed|journal|conference|workshop)\b", low):
             continue
-        candidates.append(ln)
+        if len(ln) < 4 or len(ln) > 220:
+            continue
 
-    # Author lines often contain commas, semicolons, initials, or several capitalized names.
-    author_like = []
-    for ln in candidates[:12]:
-        cap_words = re.findall(r"\b[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+\b", ln)
-        if len(cap_words) >= 2 and not ln.endswith("."):
-            author_like.append(ln)
+        # Remove common affiliation markers/superscripts.
+        ln = re.sub(r"[\*\†\‡\§]", "", ln)
+        ln = re.sub(r"\b\d+\b", "", ln)
+        ln = re.sub(r"\s{2,}", " ", ln).strip(" ,;")
+        if ln:
+            cleaned.append(ln)
 
-    if author_like:
-        authors = " ".join(author_like[:3])
-        authors = re.sub(r"\s*(?:,|;|\band\b)\s*", "; ", authors)
-        authors = re.sub(r"\s{2,}", " ", authors).strip(" ;,")
-        return authors
+    if not cleaned:
+        return ""
 
-    return ""
+    # Join likely author lines until an affiliation-like or too-long line appears.
+    author_text = " ".join(cleaned[:4])
+
+    # Some PDFs put all authors on one line with commas already.
+    author_text = re.sub(r"\s+(and|AND)\s+", ", ", author_text)
+    author_text = author_text.replace(";", ",")
+
+    # If names are separated only by multiple spaces, try to preserve them reasonably.
+    author_text = re.sub(r"\s*,\s*", ", ", author_text)
+    author_text = re.sub(r",\s*,+", ", ", author_text)
+    author_text = re.sub(r"\s{2,}", " ", author_text).strip(" ,;")
+
+    return _normalize_authors_commas(author_text)
 
 
 def parse_pdf_bytes(pdf_bytes, qid, fname=""):
@@ -397,7 +444,7 @@ def parse_pdf_bytes(pdf_bytes, qid, fname=""):
             except Exception:
                 doi_authors = ""
 
-        authors = _extract_authors_from_pdf_lines(lines, title, doi_authors)
+        authors = _normalize_authors_commas(_extract_authors_from_pdf_lines(lines, title, doi_authors))
 
         p = _paper(
             title=title,
@@ -413,7 +460,7 @@ def parse_pdf_bytes(pdf_bytes, qid, fname=""):
         )
         p["abstract"] = abstract
         if not keywords:
-            p["notes"] = "PDF parsed, but official Keywords line not found — check manually"
+            p["notes"] = "PDF parsed. Official Keywords heading not found, so Keywords kept empty."
         papers.append(p)
 
     except Exception as e:
@@ -747,7 +794,7 @@ def _format_crossref_authors(author_list):
         if name:
             names.append(name)
 
-    return "; ".join(names)
+    return ", ".join(names)
 
 
 def _format_semantic_authors(author_list):
@@ -758,7 +805,7 @@ def _format_semantic_authors(author_list):
         if name:
             names.append(name)
 
-    return "; ".join(names)
+    return ", ".join(names)
 
 
 def _format_openalex_authors(authorships):
@@ -771,7 +818,7 @@ def _format_openalex_authors(authorships):
         if name:
             names.append(name)
 
-    return "; ".join(names)
+    return ", ".join(names)
 
 
 def _author_count(authors):
@@ -1095,7 +1142,11 @@ def fetch_abstract_keywords_authors_for_paper(paper):
 
     abstract = paper.get("abstract", "").strip()
     keywords = paper.get("keywords", "").strip()
-    authors = paper.get("authors", "").strip()
+    authors = _normalize_authors_commas(paper.get("authors", "").strip())
+
+    # For PDF uploads, keywords must come ONLY from the paper's official keyword heading.
+    # Do not fill PDF keywords from CrossRef subjects, Semantic Scholar fields, OpenAlex concepts, or HTML meta tags.
+    is_pdf_upload = paper.get("database", "") == "PDF"
 
     if doi:
         # CrossRef
@@ -1104,7 +1155,7 @@ def fetch_abstract_keywords_authors_for_paper(paper):
 
             if not abstract and ab1:
                 abstract = ab1
-            if not keywords and kw1:
+            if not is_pdf_upload and not keywords and kw1:
                 keywords = kw1
             if au1 and _author_count(au1) > _author_count(authors):
                 authors = au1
@@ -1115,7 +1166,7 @@ def fetch_abstract_keywords_authors_for_paper(paper):
 
             if not abstract and ab2:
                 abstract = ab2
-            if not keywords and kw2:
+            if not is_pdf_upload and not keywords and kw2:
                 keywords = kw2
             if au2 and _author_count(au2) > _author_count(authors):
                 authors = au2
@@ -1126,7 +1177,7 @@ def fetch_abstract_keywords_authors_for_paper(paper):
 
             if not abstract and ab3:
                 abstract = ab3
-            if not keywords and kw3:
+            if not is_pdf_upload and not keywords and kw3:
                 keywords = kw3
             if au3 and _author_count(au3) > _author_count(authors):
                 authors = au3
@@ -1146,7 +1197,7 @@ def fetch_abstract_keywords_authors_for_paper(paper):
 
                 html_kw, html_authors = scrape_html_keywords_authors(r.text)
 
-                if not keywords and html_kw:
+                if not is_pdf_upload and not keywords and html_kw:
                     keywords = html_kw
                 if html_authors and _author_count(html_authors) > _author_count(authors):
                     authors = html_authors
@@ -1162,7 +1213,7 @@ def fetch_abstract_keywords_authors_for_paper(paper):
 
                 html_kw, html_authors = scrape_html_keywords_authors(r.text)
 
-                if not keywords and html_kw:
+                if not is_pdf_upload and not keywords and html_kw:
                     keywords = html_kw
                 if html_authors and _author_count(html_authors) > _author_count(authors):
                     authors = html_authors
@@ -1955,6 +2006,7 @@ with tab1:
                     if keywords and not need_abstract[idx].get("keywords", ""):
                         need_abstract[idx]["keywords"] = keywords
 
+                    authors = _normalize_authors_commas(authors)
                     if authors and _author_count(authors) > _author_count(need_abstract[idx].get("authors", "")):
                         need_abstract[idx]["authors"] = authors
 
