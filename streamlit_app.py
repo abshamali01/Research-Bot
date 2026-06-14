@@ -1,5 +1,5 @@
 """
-Systematic Review Bot v12
+Systematic Review Bot v12.1
 3 Dimensions: D1 Standardization & AI, D2 Context Engineering, D3 Token Efficiency
 PRISMA 2020 + Auto E1/E2/E7 + Year Recovery + Post-fetch Language Check + Word Template
 
@@ -18,7 +18,7 @@ import pandas as pd
 import io, re, csv, time, concurrent.futures, threading
 from datetime import datetime
 
-st.set_page_config(page_title="SR Bot", page_icon="🔬", layout="wide")
+st.set_page_config(page_title="SR Bot v12.1", page_icon="🔬", layout="wide")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 QUERY_MAP = {
@@ -155,6 +155,24 @@ def parse_scholar_csv(content, qid):
         st.warning(f"Scholar parse error: {e}")
     return papers
 
+
+
+def _normalize_authors_commas(authors):
+    """
+    Normalize author names to:
+    Kashif Imteyaz, Michael Muller, Claudia Flores-Saviaga, Saiph Savage
+    """
+    if not authors:
+        return ""
+
+    authors = re.sub(r"\s+", " ", authors).strip(" ,;")
+    authors = authors.replace(" and ", ", ")
+    authors = authors.replace(" AND ", ", ")
+    authors = authors.replace(";", ",")
+    authors = re.sub(r"\s*,\s*", ", ", authors)
+    authors = re.sub(r",\s*,+", ", ", authors)
+    authors = re.sub(r"\s{2,}", " ", authors)
+    return authors.strip(" ,;")
 
 def parse_bib(content, qid):
     papers = []
