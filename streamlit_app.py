@@ -1,14 +1,15 @@
 """
-Systematic Review Bot v10
+Systematic Review Bot v11
 3 Dimensions: D1 Standardization & AI, D2 Context Engineering, D3 Token Efficiency
 PRISMA 2020 + Auto E1/E2/E7 + Year Recovery + Post-fetch Language Check + Word Template
 
-Updates in v10:
+Updates in v11:
 - Full Authors column
 - Recover missing authors from CrossRef, Semantic Scholar, OpenAlex, and publisher HTML
 - Keywords column
 - Extract keywords from CSV/BIB, CrossRef subjects, Semantic Scholar fieldsOfStudy,
-  OpenAlex concepts, and publisher HTML meta tags
+  OpenAlex concepts, publisher HTML meta tags, and official PDF "Keywords:" section
+- PDF upload support using PyMuPDF
 """
 
 import streamlit as st
@@ -189,6 +190,236 @@ def parse_bib(content, qid):
         ))
 
     return [p for p in papers if p["title"]]
+
+
+# ── PDF Parser: official authors + official keywords from PDF ─────────────────
+def _safe_import_fitz():
+    try:
+        import fitz  # PyMuPDF
+        return fitz
+    except Exception:
+        return None
+
+
+def _normalize_pdf_text(text):
+    text = text or ""
+    text = text.replace("\x00", " ")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _extract_doi_from_text(text):
+    if not text:
+        return ""
+    m = re.search(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+", text, flags=re.I)
+    return m.group(0).rstrip(".,;)") if m else ""
+
+
+def _extract_year_from_text(text):
+    m = re.search(r"\b(20[1-2][0-9]|2015|2016|2017|2018|2019|2020|2021|2022|2023|2024|2025|2026)\b", text or "")
+    return m.group(1) if m else ""
+
+
+def _extract_pdf_abstract(text):
+    if not text:
+        return ""
+
+    patterns = [
+        r"\bAbstract\b\s*[:\-]?\s*(.*?)(?=\n\s*Keywords?\s*[:\-]|\n\s*Key words\s*[:\-]|\n\s*1\.?\s+Introduction\b|\n\s*Introduction\b)",
+        r"\bABSTRACT\b\s*[:\-]?\s*(.*?)(?=\n\s*KEYWORDS?\s*[:\-]|\n\s*KEY WORDS\s*[:\-]|\n\s*1\.?\s+INTRODUCTION\b|\n\s*INTRODUCTION\b)",
+    ]
+
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.I | re.S)
+        if m:
+            ab = _clean(m.group(1))
+            if 50 < len(ab) < 6000:
+                return ab
+
+    return ""
+
+
+def _extract_pdf_keywords(text):
+    """
+    Extract the official author keywords written under/near the abstract.
+    Example:
+    Keywords: requirements engineering; Large Language Models (LLMs); BERT
+    """
+    if not text:
+        return ""
+
+    patterns = [
+        r"\bKeywords?\b\s*[:\-]\s*(.*?)(?=\n\s*(?:1\.?\s+)?Introduction\b|\n\s*INTRODUCTION\b|\n\s*Categories and Subject Descriptors\b|\n\s*CCS Concepts\b|\n\s*©|\n\s*Copyright\b|\n\s*Received\b)",
+        r"\bKey words\b\s*[:\-]\s*(.*?)(?=\n\s*(?:1\.?\s+)?Introduction\b|\n\s*INTRODUCTION\b|\n\s*©|\n\s*Copyright\b)",
+        r"\bIndex Terms\b\s*[:\-]\s*(.*?)(?=\n\s*(?:1\.?\s+)?Introduction\b|\n\s*INTRODUCTION\b|\n\s*©|\n\s*Copyright\b)",
+    ]
+
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.I | re.S)
+        if m:
+            kw = m.group(1)
+            kw = re.sub(r"\s*\n\s*", " ", kw)
+            kw = re.sub(r"\s{2,}", " ", kw).strip(" .;:")
+            kw = re.sub(r"\s*[,|]\s*", "; ", kw)
+            kw = re.sub(r"\s*;\s*", "; ", kw)
+            # Avoid accidentally taking a whole introduction section
+            if 3 <= len(kw) <= 900:
+                return kw.strip(" ;")
+
+    return ""
+
+
+def _extract_title_from_pdf_lines(lines, meta_title=""):
+    if meta_title and len(meta_title.strip()) > 8 and not meta_title.lower().endswith(".pdf"):
+        return meta_title.strip()
+
+    ignore = {
+        "abstract", "keywords", "keyword", "introduction", "research article",
+        "original article", "conference paper", "proceedings", "contents"
+    }
+
+    clean_lines = []
+    for ln in lines[:60]:
+        ln = re.sub(r"\s+", " ", ln).strip()
+        if not ln:
+            continue
+        if ln.lower() in ignore:
+            continue
+        if ln.lower().startswith(("doi:", "http", "www.", "copyright", "©")):
+            continue
+        if len(ln) < 8:
+            continue
+        clean_lines.append(ln)
+
+    # Usually the title is the first long meaningful line before Abstract.
+    for ln in clean_lines[:15]:
+        if len(ln.split()) >= 4:
+            return ln
+
+    return clean_lines[0] if clean_lines else ""
+
+
+def _extract_authors_from_pdf_lines(lines, title="", doi_authors=""):
+    """
+    First preference is DOI API authors. If unavailable, use a conservative first-page heuristic.
+    """
+    if doi_authors:
+        return doi_authors
+
+    if not lines:
+        return ""
+
+    # Take content before Abstract.
+    abstract_pos = None
+    for i, ln in enumerate(lines):
+        if ln.strip().lower() == "abstract" or ln.strip().lower().startswith("abstract "):
+            abstract_pos = i
+            break
+
+    pre = lines[:abstract_pos] if abstract_pos else lines[:35]
+    pre = [re.sub(r"\s+", " ", x).strip() for x in pre if re.sub(r"\s+", " ", x).strip()]
+
+    # Remove title line and obvious non-author lines.
+    candidates = []
+    for ln in pre:
+        low = ln.lower()
+        if title and ln.strip() == title.strip():
+            continue
+        if low in ("research article", "original article", "conference paper", "abstract"):
+            continue
+        if low.startswith(("doi", "http", "www", "received", "accepted", "published", "keywords")):
+            continue
+        if "@" in ln:
+            continue
+        if re.search(r"\b(university|department|institute|school|faculty|laboratory|centre|center)\b", low):
+            continue
+        if len(ln) < 4 or len(ln) > 250:
+            continue
+        candidates.append(ln)
+
+    # Author lines often contain commas, semicolons, initials, or several capitalized names.
+    author_like = []
+    for ln in candidates[:12]:
+        cap_words = re.findall(r"\b[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+\b", ln)
+        if len(cap_words) >= 2 and not ln.endswith("."):
+            author_like.append(ln)
+
+    if author_like:
+        authors = " ".join(author_like[:3])
+        authors = re.sub(r"\s*(?:,|;|\band\b)\s*", "; ", authors)
+        authors = re.sub(r"\s{2,}", " ", authors).strip(" ;,")
+        return authors
+
+    return ""
+
+
+def parse_pdf_bytes(pdf_bytes, qid, fname=""):
+    """
+    Parse a PDF paper directly:
+    - all authors via DOI API when DOI exists
+    - official keywords from the PDF 'Keywords:' line under abstract
+    - abstract from PDF
+    """
+    papers = []
+    fitz = _safe_import_fitz()
+
+    if fitz is None:
+        st.error("PDF support needs PyMuPDF. Install it with: pip install pymupdf")
+        return papers
+
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        meta = doc.metadata or {}
+
+        page_texts = []
+        for i in range(min(len(doc), 5)):
+            page_texts.append(doc[i].get_text("text"))
+
+        first_page = _normalize_pdf_text(page_texts[0] if page_texts else "")
+        full_text = _normalize_pdf_text("\n".join(page_texts))
+        lines = [ln.strip() for ln in first_page.splitlines() if ln.strip()]
+
+        doi = _extract_doi_from_text(full_text)
+        title = _extract_title_from_pdf_lines(lines, meta.get("title", ""))
+        year = _extract_year_from_text(full_text)
+        abstract = _extract_pdf_abstract(full_text)
+        keywords = _extract_pdf_keywords(full_text)
+
+        doi_authors = ""
+        if doi:
+            try:
+                _, _, doi_authors = fetch_crossref_data(doi, title)
+                if not doi_authors:
+                    _, _, doi_authors = fetch_semantic_scholar_data(doi)
+                if not doi_authors:
+                    _, _, doi_authors = fetch_openalex_data(doi)
+            except Exception:
+                doi_authors = ""
+
+        authors = _extract_authors_from_pdf_lines(lines, title, doi_authors)
+
+        p = _paper(
+            title=title,
+            authors=authors,
+            year=year,
+            source="PDF Upload",
+            doi=doi,
+            url="",
+            ptype="Article",
+            database="PDF",
+            query_id=qid,
+            keywords=keywords
+        )
+        p["abstract"] = abstract
+        if not keywords:
+            p["notes"] = "PDF parsed, but official Keywords line not found — check manually"
+        papers.append(p)
+
+    except Exception as e:
+        st.warning(f"PDF parse error for {fname}: {e}")
+
+    return papers
 
 
 def detect_csv_type(content, fname=""):
@@ -543,6 +774,15 @@ def _format_openalex_authors(authorships):
     return "; ".join(names)
 
 
+def _author_count(authors):
+    if not authors:
+        return 0
+    if " et al" in authors.lower():
+        return 1
+    parts = re.split(r"\s*;\s*|\s+\band\b\s+|\s*,\s*(?=[A-Z])", authors)
+    return len([p for p in parts if p.strip()])
+
+
 def scrape_html_keywords_authors(html):
     """
     Extract keywords and authors from publisher HTML.
@@ -866,7 +1106,7 @@ def fetch_abstract_keywords_authors_for_paper(paper):
                 abstract = ab1
             if not keywords and kw1:
                 keywords = kw1
-            if not authors and au1:
+            if au1 and _author_count(au1) > _author_count(authors):
                 authors = au1
 
         # Semantic Scholar
@@ -877,7 +1117,7 @@ def fetch_abstract_keywords_authors_for_paper(paper):
                 abstract = ab2
             if not keywords and kw2:
                 keywords = kw2
-            if not authors and au2:
+            if au2 and _author_count(au2) > _author_count(authors):
                 authors = au2
 
         # OpenAlex
@@ -888,7 +1128,7 @@ def fetch_abstract_keywords_authors_for_paper(paper):
                 abstract = ab3
             if not keywords and kw3:
                 keywords = kw3
-            if not authors and au3:
+            if au3 and _author_count(au3) > _author_count(authors):
                 authors = au3
 
         # EuropePMC abstract only
@@ -908,7 +1148,7 @@ def fetch_abstract_keywords_authors_for_paper(paper):
 
                 if not keywords and html_kw:
                     keywords = html_kw
-                if not authors and html_authors:
+                if html_authors and _author_count(html_authors) > _author_count(authors):
                     authors = html_authors
 
     # Original URL scrape
@@ -924,7 +1164,7 @@ def fetch_abstract_keywords_authors_for_paper(paper):
 
                 if not keywords and html_kw:
                     keywords = html_kw
-                if not authors and html_authors:
+                if html_authors and _author_count(html_authors) > _author_count(authors):
                     authors = html_authors
 
     return abstract, keywords, authors
@@ -1469,7 +1709,7 @@ with tab1:
     <div style="text-align:center;padding:20px 0 30px 0;">
     <h1 style="font-size:2.5rem;margin-bottom:8px;">🔬 Systematic Review Bot</h1>
     <p style="color:#8b949e;font-size:1.1rem;margin:0;">
-    Upload CSV/BIB → Auto-Screen → Fetch Abstracts + Authors + Keywords → 3 Workbooks + Word
+    Upload CSV/BIB/PDF → Auto-Screen → Fetch Abstracts + Authors + Official Keywords → 3 Workbooks + Word
     </p></div>
     """, unsafe_allow_html=True)
 
@@ -1493,11 +1733,11 @@ with tab1:
             st.session_state.clear()
             st.rerun()
 
-    st.caption("Supports: Springer CSV · Scopus CSV · Google Scholar CSV (Publish or Perish) · ACM BibTeX")
+    st.caption("Supports: Springer CSV · Scopus CSV · Google Scholar CSV (Publish or Perish) · ACM BibTeX · PDF papers")
 
     uploaded = st.file_uploader(
         "Drop all files here",
-        type=["csv", "bib"],
+        type=["csv", "bib", "pdf"],
         accept_multiple_files=True,
         label_visibility="collapsed"
     )
@@ -1516,23 +1756,29 @@ with tab1:
                     qid = q.upper()
                     break
 
-            cf = f.read().decode("utf-8", errors="replace")
+            raw_bytes = f.read()
 
-            if fname.endswith(".bib"):
-                papers = parse_bib(cf, qid)
-                db = "ACM"
+            if fname.endswith(".pdf"):
+                papers = parse_pdf_bytes(raw_bytes, qid, f.name)
+                db = "PDF"
             else:
-                ctype = detect_csv_type(cf, fname)
+                cf = raw_bytes.decode("utf-8", errors="replace")
 
-                if ctype == "springer":
-                    papers = parse_springer_csv(cf, qid)
-                    db = "Springer"
-                elif ctype in ("scopus", "scopus_pop"):
-                    papers = parse_scopus_pop_csv(cf, qid) if ctype == "scopus_pop" else parse_scopus_csv(cf, qid)
-                    db = "Elsevier/Scopus"
+                if fname.endswith(".bib"):
+                    papers = parse_bib(cf, qid)
+                    db = "ACM"
                 else:
-                    papers = parse_scholar_csv(cf, qid)
-                    db = "Google Scholar"
+                    ctype = detect_csv_type(cf, fname)
+
+                    if ctype == "springer":
+                        papers = parse_springer_csv(cf, qid)
+                        db = "Springer"
+                    elif ctype in ("scopus", "scopus_pop"):
+                        papers = parse_scopus_pop_csv(cf, qid) if ctype == "scopus_pop" else parse_scopus_csv(cf, qid)
+                        db = "Elsevier/Scopus"
+                    else:
+                        papers = parse_scholar_csv(cf, qid)
+                        db = "Google Scholar"
 
             parse_log.append((f.name, db, qid, len(papers)))
             stats["identification"].setdefault(db, {}).setdefault(qid, 0)
@@ -1560,7 +1806,8 @@ with tab1:
                 "Springer": "springer",
                 "ACM": "acm",
                 "Elsevier/Scopus": "scopus",
-                "Google Scholar": "scholar"
+                "Google Scholar": "scholar",
+                "PDF": "acm"
             }.get(db, "springer")
 
             st.markdown(
@@ -1708,7 +1955,7 @@ with tab1:
                     if keywords and not need_abstract[idx].get("keywords", ""):
                         need_abstract[idx]["keywords"] = keywords
 
-                    if authors and not need_abstract[idx].get("authors", ""):
+                    if authors and _author_count(authors) > _author_count(need_abstract[idx].get("authors", "")):
                         need_abstract[idx]["authors"] = authors
 
                 prog.progress(1.0)
