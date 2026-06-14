@@ -1,7 +1,8 @@
 """
-Systematic Review Bot v8
+Systematic Review Bot v9
 3 Dimensions: D1 Standardization & AI, D2 Context Engineering, D3 Token Efficiency
 PRISMA 2020 + Auto E1/E2/E7 + Year Recovery + Post-fetch Language Check + Word Template
+New: Full authors (no truncation) + Keywords column extracted from all databases
 """
 
 import streamlit as st
@@ -35,12 +36,14 @@ EXCLUSION_CRITERIA = [
 ]
 
 # ── Parsers ───────────────────────────────────────────────────────────────────
-def _paper(title="", authors="", year="", source="", doi="", url="", ptype="", database="", query_id=""):
+def _paper(title="", authors="", year="", source="", doi="", url="", ptype="",
+           database="", query_id="", keywords=""):
     return {
         "title": title, "authors": authors, "year": str(year), "source": source,
         "doi": doi, "abstract": "", "url": url, "type": ptype,
         "database": database, "query_id": query_id,
         "dimension": QUERY_MAP.get(query_id, ""),
+        "keywords": keywords,
         "screening_status": "Pending", "exclusion_reason": "", "notes": "",
         "auto_excluded": False,
     }
@@ -50,12 +53,15 @@ def parse_springer_csv(content, qid):
     try:
         for row in csv.DictReader(io.StringIO(content)):
             papers.append(_paper(
-                title=row.get("Item Title","").strip(), authors=row.get("Authors","").strip(),
+                title=row.get("Item Title","").strip(),
+                authors=row.get("Authors","").strip(),
                 year=str(row.get("Publication Year","")).strip(),
                 source=(row.get("Publication Title","") or row.get("Book Series Title","")).strip(),
                 doi=row.get("Item DOI","").strip(),
                 url=row.get("ArticleURL","").strip() or row.get("URL","").strip(),
-                ptype=row.get("Content Type","").strip(), database="Springer", query_id=qid))
+                ptype=row.get("Content Type","").strip(),
+                database="Springer", query_id=qid,
+                keywords=row.get("Keywords","").strip() or row.get("Author Keywords","").strip()))
     except Exception as e: st.warning(f"Springer parse error: {e}")
     return papers
 
@@ -63,11 +69,17 @@ def parse_scopus_csv(content, qid):
     papers = []
     try:
         for row in csv.DictReader(io.StringIO(content)):
+            kw = "; ".join(filter(None,[row.get("Author Keywords","").strip(), row.get("Index Keywords","").strip()]))
             papers.append(_paper(
-                title=row.get("Title","").strip(), authors=row.get("Authors","").strip(),
-                year=str(row.get("Year","")).strip(), source=row.get("Source title","").strip(),
-                doi=row.get("DOI","").strip(), url=row.get("Link","").strip(),
-                ptype=row.get("Document Type","").strip(), database="Elsevier/Scopus", query_id=qid))
+                title=row.get("Title","").strip(),
+                authors=row.get("Authors","").strip(),
+                year=str(row.get("Year","")).strip(),
+                source=row.get("Source title","").strip(),
+                doi=row.get("DOI","").strip(),
+                url=row.get("Link","").strip(),
+                ptype=row.get("Document Type","").strip(),
+                database="Elsevier/Scopus", query_id=qid,
+                keywords=kw))
     except Exception as e: st.warning(f"Scopus parse error: {e}")
     return papers
 
@@ -76,10 +88,15 @@ def parse_scopus_pop_csv(content, qid):
     try:
         for row in csv.DictReader(io.StringIO(content)):
             papers.append(_paper(
-                title=row.get("Title","").strip(), authors=row.get("Authors","").strip(),
-                year=str(row.get("Year","")).strip(), source=row.get("Source","").strip(),
-                doi=row.get("DOI","").strip(), url=row.get("ArticleURL","").strip(),
-                ptype=row.get("Type","Article").strip(), database="Elsevier/Scopus", query_id=qid))
+                title=row.get("Title","").strip(),
+                authors=row.get("Authors","").strip(),
+                year=str(row.get("Year","")).strip(),
+                source=row.get("Source","").strip(),
+                doi=row.get("DOI","").strip(),
+                url=row.get("ArticleURL","").strip(),
+                ptype=row.get("Type","Article").strip(),
+                database="Elsevier/Scopus", query_id=qid,
+                keywords=row.get("Keywords","").strip() or row.get("Author Keywords","").strip()))
     except Exception as e: st.warning(f"Scopus PoP parse error: {e}")
     return papers
 
@@ -88,11 +105,15 @@ def parse_scholar_csv(content, qid):
     try:
         for row in csv.DictReader(io.StringIO(content)):
             papers.append(_paper(
-                title=row.get("Title","").strip(), authors=row.get("Authors","").strip(),
-                year=str(row.get("Year","")).strip(), source=row.get("Source","").strip(),
+                title=row.get("Title","").strip(),
+                authors=row.get("Authors","").strip(),
+                year=str(row.get("Year","")).strip(),
+                source=row.get("Source","").strip(),
                 doi=row.get("DOI","").strip(),
                 url=row.get("ArticleURL","").strip() or row.get("URL","").strip(),
-                ptype=row.get("Type","article").strip(), database="Google Scholar", query_id=qid))
+                ptype=row.get("Type","article").strip(),
+                database="Google Scholar", query_id=qid,
+                keywords=row.get("Keywords","").strip()))
     except Exception as e: st.warning(f"Scholar parse error: {e}")
     return papers
 
@@ -111,7 +132,8 @@ def parse_bib(content, qid):
             source=gf("booktitle",entry) or gf("journal",entry), doi=gf("doi",entry),
             url=gf("url",entry),
             ptype="Conference Paper" if "inproceedings" in entry[:30].lower() else "Article",
-            database="ACM", query_id=qid))
+            database="ACM", query_id=qid,
+            keywords=gf("keywords",entry) or gf("keyword",entry)))
     return [p for p in papers if p["title"]]
 
 def detect_csv_type(content, fname=""):
@@ -132,6 +154,7 @@ def paper_score(p):
     if p.get("doi","").strip():      s += 2
     if p.get("url","").strip():      s += 1
     if p.get("authors","").strip():  s += 1
+    if p.get("keywords","").strip(): s += 1
     return s
 
 def deduplicate(papers):
@@ -160,7 +183,6 @@ SPANISH_WORDS = ['para','con','por','los','las','una','del','que','como','más',
                  'esta','están','tiene','pueden','entre','sobre','hacia','desde']
 
 def is_english_text(text):
-    """Returns (is_english, reason). Keyword-based — catches German/French even with few umlauts."""
     if not text or len(text.strip()) < 10: return True, ""
     cjk = sum(1 for c in text if '\u4e00' <= c <= '\u9fff' or '\u3040' <= c <= '\u30ff')
     if cjk > 3: return False, "CJK characters"
@@ -239,17 +261,13 @@ def _is_scopus_inward(url):
     return bool(url) and 'scopus.com/inward' in url.lower()
 
 # ── Year Recovery ─────────────────────────────────────────────────────────────
-
-def _extract_year_from_dateparts(date_parts):
-    """Extract year from CrossRef/SemanticScholar date-parts format [[2025, 4, 25]]"""
+def _extract_year_from_dateparts(dp):
     try:
-        if date_parts and isinstance(date_parts, list) and date_parts[0]:
-            return str(date_parts[0][0])
+        if dp and isinstance(dp, list) and dp[0]: return str(dp[0][0])
     except: pass
     return ""
 
 def fetch_year_from_semantic_scholar(doi):
-    """Try to get year from SemanticScholar by DOI"""
     if not doi: return ""
     try:
         _rate_limit()
@@ -262,7 +280,6 @@ def fetch_year_from_semantic_scholar(doi):
     return ""
 
 def fetch_year_from_crossref(doi):
-    """Try to get year from CrossRef by DOI — checks multiple date fields"""
     if not doi: return ""
     try:
         _rate_limit()
@@ -270,31 +287,25 @@ def fetch_year_from_crossref(doi):
                      headers={"User-Agent":"SystematicReview/1.0"}, timeout=8)
         if r.ok:
             msg = r.json().get("message", {})
-            # Try fields in order of reliability
-            for field in ["published", "published-print", "published-online", "issued", "created"]:
+            for field in ["published","published-print","published-online","issued","created"]:
                 dp = msg.get(field, {}).get("date-parts")
                 year = _extract_year_from_dateparts(dp)
-                if year and year.isdigit() and 1990 <= int(year) <= 2030:
-                    return year
+                if year and year.isdigit() and 1990 <= int(year) <= 2030: return year
     except: pass
     return ""
 
 def recover_year(paper):
-    """Try to recover missing year from APIs. Returns year string or ''"""
     doi = _norm_doi(paper.get("doi",""))
     if doi:
-        # Try SemanticScholar first (faster)
         year = fetch_year_from_semantic_scholar(doi)
         if year: return year
-        # Try CrossRef
         year = fetch_year_from_crossref(doi)
         if year: return year
     return ""
 
-# ── Abstract Fetching ─────────────────────────────────────────────────────────
-
+# ── Abstract + Keywords Fetching ──────────────────────────────────────────────
 def fetch_crossref_abstract(doi, paper_title=""):
-    if not doi: return ""
+    if not doi: return "", ""
     try:
         _rate_limit()
         r = _req.get(f"https://api.crossref.org/works/{doi}",
@@ -302,49 +313,62 @@ def fetch_crossref_abstract(doi, paper_title=""):
         if r.ok:
             msg = r.json().get("message", {})
             abstract = msg.get("abstract","")
+            # Title verification
+            cr_title = (msg.get("title") or [""])[0]
+            if paper_title and cr_title and not _title_match(paper_title, cr_title):
+                return "", ""
             if abstract:
-                # Verify it's the right paper
-                cr_title = (msg.get("title") or [""])[0]
-                if paper_title and cr_title and not _title_match(paper_title, cr_title):
-                    return ""
                 abstract = _clean(abstract)
-                if len(abstract) > 50 and _is_english_abstract(abstract): return abstract
+                if len(abstract) > 50 and _is_english_abstract(abstract):
+                    return abstract, ""
     except: pass
-    return ""
+    return "", ""
 
-def fetch_semantic_scholar_abstract(doi):
-    if not doi: return ""
+def fetch_semantic_scholar_data(doi):
+    """Returns (abstract, keywords) from Semantic Scholar"""
+    if not doi: return "", ""
     for url in [f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}",
                 f"https://api.semanticscholar.org/graph/v1/paper/{doi}"]:
         try:
             _rate_limit()
-            r = _req.get(url, params={"fields":"abstract"}, timeout=10)
+            r = _req.get(url, params={"fields":"abstract,tldr,fieldsOfStudy"}, timeout=10)
             if r.ok:
-                abstract = r.json().get("abstract") or ""
-                if abstract and len(abstract) > 50 and _is_english_abstract(abstract): return abstract
+                data = r.json()
+                abstract = data.get("abstract") or ""
+                fields = data.get("fieldsOfStudy") or []
+                kw = "; ".join(fields) if fields else ""
+                if abstract and len(abstract) > 50 and _is_english_abstract(abstract):
+                    return abstract, kw
+                elif kw:
+                    return "", kw
         except: pass
-    return ""
+    return "", ""
 
-def fetch_openalex_abstract(doi):
-    if not doi: return ""
+def fetch_openalex_data(doi):
+    """Returns (abstract, keywords) from OpenAlex"""
+    if not doi: return "", ""
     try:
         _rate_limit()
         r = _req.get(f"https://api.openalex.org/works/doi:{doi}", timeout=10)
         if r.ok:
             data = r.json()
             abstract = data.get("abstract","")
-            if abstract and len(abstract) > 50 and _is_english_abstract(abstract): return abstract
-            inv = data.get("abstract_inverted_index")
-            if inv:
-                words = []
-                for word, positions in inv.items():
-                    for pos in positions:
-                        while len(words) <= pos: words.append("")
-                        words[pos] = word
-                abstract = " ".join(words)
-                if len(abstract) > 50 and _is_english_abstract(abstract): return abstract
+            if not abstract:
+                inv = data.get("abstract_inverted_index")
+                if inv:
+                    words = []
+                    for word, positions in inv.items():
+                        for pos in positions:
+                            while len(words) <= pos: words.append("")
+                            words[pos] = word
+                    abstract = " ".join(words)
+            # Keywords from concepts
+            concepts = data.get("concepts") or []
+            kw = "; ".join(c.get("display_name","") for c in concepts[:10] if c.get("display_name"))
+            ab_ok = abstract and len(abstract) > 50 and _is_english_abstract(abstract)
+            return (abstract if ab_ok else ""), kw
     except: pass
-    return ""
+    return "", ""
 
 def fetch_europepmc_abstract(doi):
     if not doi: return ""
@@ -398,89 +422,86 @@ def scrape_html_abstract(html):
     except: pass
     return ""
 
-def fetch_abstract_for_paper(paper):
+def fetch_abstract_and_keywords_for_paper(paper):
+    """Returns (abstract, keywords). Fills both where possible."""
     doi   = _norm_doi(paper.get("doi",""))
     url   = paper.get("url","").strip()
     title = paper.get("title","")
+    existing_kw = paper.get("keywords","").strip()
 
-    # 1. DOI APIs: CrossRef (with title check) → SemanticScholar → OpenAlex → EuropePMC
+    abstract = ""
+    keywords = existing_kw  # start with what we already have from CSV/BIB
+
     if doi:
-        for fn in [lambda: fetch_crossref_abstract(doi, title),
-                   lambda: fetch_semantic_scholar_abstract(doi),
-                   lambda: fetch_openalex_abstract(doi),
-                   lambda: fetch_europepmc_abstract(doi)]:
-            abstract = fn()
-            if abstract: return abstract
-        # 2. doi.org URL scrape
-        doi_url = f"https://doi.org/{doi}"
-        r = _fetch_url(doi_url)
-        if r and 'pdf' not in r.headers.get('Content-Type','').lower():
-            abstract = scrape_html_abstract(r.text)
-            if abstract: return abstract
+        # CrossRef — abstract only
+        ab, _ = fetch_crossref_abstract(doi, title)
+        if ab: abstract = ab
 
-    # 3. Original URL
-    if url and not _is_pdf(url) and not _is_blocked(url) and not _is_scopus_inward(url):
-        if doi and url == f"https://doi.org/{doi}": pass  # already tried
-        else:
+        # Semantic Scholar — abstract + fields of study as keywords
+        if not abstract or not keywords:
+            ab2, kw2 = fetch_semantic_scholar_data(doi)
+            if not abstract and ab2: abstract = ab2
+            if not keywords and kw2: keywords = kw2
+
+        # OpenAlex — abstract + concepts as keywords
+        if not abstract or not keywords:
+            ab3, kw3 = fetch_openalex_data(doi)
+            if not abstract and ab3: abstract = ab3
+            if not keywords and kw3: keywords = kw3
+
+        # EuropePMC — abstract only
+        if not abstract:
+            abstract = fetch_europepmc_abstract(doi)
+
+        # doi.org URL scrape
+        if not abstract:
+            doi_url = f"https://doi.org/{doi}"
+            r = _fetch_url(doi_url)
+            if r and 'pdf' not in r.headers.get('Content-Type','').lower():
+                abstract = scrape_html_abstract(r.text)
+
+    # Original URL scrape
+    if not abstract and url and not _is_pdf(url) and not _is_blocked(url) and not _is_scopus_inward(url):
+        if not doi or url != f"https://doi.org/{doi}":
             r = _fetch_url(url)
             if r and 'pdf' not in r.headers.get('Content-Type','').lower():
                 abstract = scrape_html_abstract(r.text)
-                if abstract: return abstract
-    return ""
+
+    return abstract, keywords
 
 # ── Auto-Screening ────────────────────────────────────────────────────────────
-
 def auto_screen(papers):
-    """Auto-screen E1/E2/E7.
-    Year logic:
-      - Year present but outside 2015-2026 → Exclude E1 (wrong year, auto)
-      - Year missing, has DOI → try API recovery → if found fill year, keep Pending
-                                                 → if not found, leave Pending (manual)
-      - Year missing, no DOI → leave Pending (manual)
-    """
     counts = {"E1": 0, "E2": 0, "E7": 0, "E1_recovered": 0}
     for p in papers:
         year = str(p.get("year","")).strip()
         doi  = _norm_doi(p.get("doi",""))
 
-        # E1 check
         if year and year.isdigit() and not is_valid_year(year):
-            # Year IS present but clearly wrong range → auto-exclude
             p.update(screening_status="Exclude", exclusion_reason="E1",
                      notes=f"Auto: year {year} outside 2015-2026", auto_excluded=True)
-            counts["E1"] += 1
-            continue
+            counts["E1"] += 1; continue
 
         if not year or not year.isdigit():
-            # Year missing
             if doi:
-                # Try API recovery
                 recovered = recover_year(p)
                 if recovered and recovered.isdigit() and is_valid_year(recovered):
                     p["year"] = recovered
                     p["notes"] = f"Year recovered from API: {recovered}"
                     counts["E1_recovered"] += 1
-                    # Fall through to language check
                 else:
-                    # API couldn't find it — leave for manual
                     p["notes"] = "Year missing — not found via API, check manually"
-                    # keep Pending, continue to next paper
                     continue
             else:
-                # No DOI, no year — leave for manual
                 p["notes"] = "Year missing, no DOI — check manually"
-                continue  # keep Pending
+                continue
 
-        # E2: Language check on title + source
         text = p.get("title","") + " " + p.get("source","")
         is_eng, reason = is_english_text(text)
         if not is_eng:
             p.update(screening_status="Exclude", exclusion_reason="E2",
                      notes=f"Auto: not English — {reason}", auto_excluded=True)
-            counts["E2"] += 1
-            continue
+            counts["E2"] += 1; continue
 
-        # E7: Missing title or authors
         if not p.get("title","").strip() or not p.get("authors","").strip():
             p.update(screening_status="Exclude", exclusion_reason="E7",
                      notes="Auto: missing title or authors", auto_excluded=True)
@@ -489,10 +510,9 @@ def auto_screen(papers):
     return papers, counts
 
 def post_fetch_language_check(papers):
-    """After abstract fetching, re-check language on title+abstract. Flag non-English as E2."""
     flagged = 0
     for p in papers:
-        if p.get("auto_excluded"): continue  # already excluded
+        if p.get("auto_excluded"): continue
         abstract = p.get("abstract","")
         if not abstract: continue
         text = p.get("title","") + " " + abstract
@@ -504,7 +524,6 @@ def post_fetch_language_check(papers):
     return papers, flagged
 
 # ── Excel Builder ─────────────────────────────────────────────────────────────
-
 def build_dimension_excel(papers, dupe_list, dim_code, dim_name):
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -513,9 +532,6 @@ def build_dimension_excel(papers, dupe_list, dim_code, dim_name):
 
     H_FILL    = PatternFill("solid", start_color="1F4E79")
     H_FONT    = Font(bold=True, color="FFFFFF", name="Arial", size=10)
-    W_FILL    = PatternFill("solid", start_color="FFF2CC")
-    M_FILL    = PatternFill("solid", start_color="FFE0E0")
-    D_FILL    = PatternFill("solid", start_color="E8EAF6")
     AUTO_FILL = PatternFill("solid", start_color="E8F5E9")
     THIN      = Side(style="thin", color="BFBFBF")
     BDR       = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -525,18 +541,27 @@ def build_dimension_excel(papers, dupe_list, dim_code, dim_name):
     dim_dupes  = [p for p in dupe_list if dim_code in p.get("dimension","")]
     if not dim_papers: return None
 
-    auto_e1  = sum(1 for p in dim_papers if p.get("exclusion_reason")=="E1")
-    auto_e2  = sum(1 for p in dim_papers if p.get("exclusion_reason")=="E2")
-    auto_e7  = sum(1 for p in dim_papers if p.get("exclusion_reason")=="E7")
-    pending  = [p for p in dim_papers if p.get("screening_status")=="Pending"]
-    miss_year= [p for p in dim_papers if not is_valid_year(p.get("year",""))]
-    miss_doi = [p for p in dim_papers if not p.get("doi","").strip()]
+    auto_e1 = sum(1 for p in dim_papers if p.get("exclusion_reason")=="E1")
+    auto_e2 = sum(1 for p in dim_papers if p.get("exclusion_reason")=="E2")
+    auto_e7 = sum(1 for p in dim_papers if p.get("exclusion_reason")=="E7")
+    pending = [p for p in dim_papers if p.get("screening_status")=="Pending"]
 
     wb = openpyxl.Workbook()
+
+    # ── Column definitions — now includes Authors (full) + Keywords ──
     COLS = [
-        ("Database",14),("Title",50),("Authors",25),("Year",6),
-        ("Source / Journal",26),("DOI",28),("URL",28),("Abstract",60),
-        ("Screening Status",14),("Exclusion Reason",20),("Notes",30),
+        ("Database",       14),
+        ("Title",          50),
+        ("Authors",        40),   # full, no truncation
+        ("Year",            6),
+        ("Source / Journal",26),
+        ("DOI",            28),
+        ("URL",            28),
+        ("Keywords",       35),   # NEW
+        ("Abstract",       60),
+        ("Screening Status",14),
+        ("Exclusion Reason",20),
+        ("Notes",          30),
     ]
 
     def write_screen(ws, plist, rfn=None, start=1):
@@ -549,10 +574,20 @@ def build_dimension_excel(papers, dupe_list, dim_code, dim_name):
         ws.row_dimensions[start].height=32
         for ri,p in enumerate(plist,start+1):
             fill = rfn(p) if rfn else (AUTO_FILL if p.get("auto_excluded") else PatternFill("solid",start_color="FFFFFF"))
-            vals=[p.get("database",""),p.get("title",""),p.get("authors","")[:120],
-                  p.get("year",""),p.get("source","")[:60],p.get("doi",""),
-                  p.get("url","")[:100],p.get("abstract",""),
-                  p.get("screening_status","Pending"),p.get("exclusion_reason",""),p.get("notes","")]
+            vals=[
+                p.get("database",""),
+                p.get("title",""),
+                p.get("authors",""),        # full authors — no truncation
+                p.get("year",""),
+                p.get("source","")[:60],
+                p.get("doi",""),
+                p.get("url","")[:100],
+                p.get("keywords",""),       # keywords column
+                p.get("abstract",""),
+                p.get("screening_status","Pending"),
+                p.get("exclusion_reason",""),
+                p.get("notes",""),
+            ]
             for ci,val in enumerate(vals,1):
                 c=ws.cell(row=ri,column=ci,value=val)
                 c.fill=fill; c.border=BDR; c.font=Font(name="Arial",size=9)
@@ -560,9 +595,9 @@ def build_dimension_excel(papers, dupe_list, dim_code, dim_name):
         ws.auto_filter.ref=f"A{start}:{get_column_letter(len(COLS))}{start+len(plist)}"
         if plist:
             dv1=DataValidation(type="list",formula1='"Pending,Include,Exclude"',allow_blank=True)
-            ws.add_data_validation(dv1); dv1.add(f'I{start+1}:I{start+len(plist)}')
+            ws.add_data_validation(dv1); dv1.add(f'J{start+1}:J{start+len(plist)}')
             dv2=DataValidation(type="list",formula1='"E1,E2,E3,E4,E5,E6,E7,E8,E9,"',allow_blank=True)
-            ws.add_data_validation(dv2); dv2.add(f'J{start+1}:J{start+len(plist)}')
+            ws.add_data_validation(dv2); dv2.add(f'K{start+1}:K{start+len(plist)}')
 
     # Sheet 1: PRISMA
     ws=wb.active; ws.title="PRISMA_Flow"; ws.sheet_view.showGridLines=False
@@ -590,7 +625,7 @@ def build_dimension_excel(papers, dupe_list, dim_code, dim_name):
         ["Screening","Reports sought for retrieval","All","ALL","","",""],
         ["Screening","Reports not retrieved","All","ALL","","",""],
         ["Eligibility","Reports assessed for eligibility","All","ALL","","",""],
-        ["Eligibility","Reports excluded with reasons","All","ALL","","","E1-E8"],
+        ["Eligibility","Reports excluded with reasons","All","ALL","","","E1-E9"],
         ["Included","Studies included in final review","All","ALL","","","Fill after screening"],
     ]
     for ri,row in enumerate(rows,5):
@@ -601,14 +636,13 @@ def build_dimension_excel(papers, dupe_list, dim_code, dim_name):
             c=ws.cell(row=ri,column=ci,value=val); c.fill=fill; c.border=BDR
             c.font=Font(name="Arial",size=9); c.alignment=Alignment(wrap_text=True,vertical="center")
 
-    # Sheet 2: Screening (non-Scholar papers)
+    # Sheet 2: Screening (non-Scholar)
     non_scholar = [p for p in dim_papers if p.get("database","") != "Google Scholar"]
     ws2=wb.create_sheet("Screening_Sheet"); write_screen(ws2, non_scholar)
 
-    # Sheet 3: Google Scholar Screening
+    # Sheet 3: Google Scholar
     scholar_papers = [p for p in dim_papers if p.get("database","") == "Google Scholar"]
-    ws_gs=wb.create_sheet("Google_Scholar_Screening")
-    write_screen(ws_gs, scholar_papers)
+    ws_gs=wb.create_sheet("Google_Scholar_Screening"); write_screen(ws_gs, scholar_papers)
 
     # Sheet 4: Concept Matrix
     ws3=wb.create_sheet("Concept_Matrix_W&W")
@@ -657,24 +691,23 @@ def build_dimension_excel(papers, dupe_list, dim_code, dim_name):
             c.font=Font(name="Arial",size=10); c.alignment=Alignment(horizontal="center",vertical="center")
         ws3.row_dimensions[ri].height=18
 
-    # Sheet 7: Exclusion Criteria
+    # Sheet 5: Exclusion Criteria
     ws4=wb.create_sheet("Exclusion_Criteria")
     ws4["B2"].value=f"Exclusion Criteria (PRISMA) — {dim_name}"
     ws4["B2"].font=Font(bold=True,size=13,color="1F4E79",name="Arial"); ws4.column_dimensions["B"].width=65
     ecolors=["FFE0E0","FFE0E0","FFF2CC","FFF2CC","D5E8D4","D5E8D4","D6E4F0","D6E4F0","F3E5F5"]
     for ri,crit in enumerate(EXCLUSION_CRITERIA,4):
         c=ws4.cell(row=ri,column=2,value=crit); c.font=Font(name="Arial",size=10)
-        cidx = ri-4
-        c.fill=PatternFill("solid",start_color=ecolors[cidx] if cidx < len(ecolors) else "FFFFFF")
+        cidx=ri-4
+        c.fill=PatternFill("solid",start_color=ecolors[cidx] if cidx<len(ecolors) else "FFFFFF")
         c.border=BDR; ws4.row_dimensions[ri].height=22
-    ws4["B14"].value="Note: E1, E2, E7 auto-detected. E2 also checked post-fetch on title+abstract. E9 checked if URL/DOI requires payment. E3-E6, E8 require manual review."
-    ws4["B13"].font=Font(italic=True,name="Arial",size=9,color="595959")
+    ws4["B14"].value="Note: E1, E2, E7 auto-detected. E2 also post-fetch. E9 = paid/not open access. E3-E6, E8 = manual."
+    ws4["B14"].font=Font(italic=True,name="Arial",size=9,color="595959")
 
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     return buf.read()
 
 # ── Word Template ─────────────────────────────────────────────────────────────
-
 def generate_word():
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -718,13 +751,13 @@ def generate_word():
         for q in queries: doc.add_paragraph(q)
 
     doc.add_heading('2.2 PRISMA Flow', 2)
-    doc.add_paragraph('PRISMA 2020 flow per dimension. See attached Excel files for detailed counts.')
+    doc.add_paragraph('PRISMA 2020 flow per dimension. See attached Excel files.')
     doc.add_paragraph('[Insert PRISMA flow diagram or reference Excel sheets]')
 
     doc.add_heading('2.3 Exclusion Criteria', 2)
     doc.add_paragraph('Papers excluded based on:')
     for c in EXCLUSION_CRITERIA: add_bullet(c)
-    doc.add_paragraph('Note: E1, E2, E7 auto-detected by script. E2 also checked post-abstract-fetch. E9 = paid/not open access. E3–E6, E8 required manual review.')
+    doc.add_paragraph('Note: E1, E2, E7 auto-detected. E9 = paid/not open access. E3–E6, E8 = manual review.')
 
     doc.add_heading('2.4 Analysis Method — Webster & Watson (2002)', 2)
     doc.add_paragraph('Concept matrix maps included papers to dimension-specific concepts to identify themes and gaps.')
@@ -761,7 +794,6 @@ def generate_word():
     return buf.read()
 
 # ── UI ────────────────────────────────────────────────────────────────────────
-
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap');
@@ -798,7 +830,7 @@ with tab1:
     <div style="text-align:center;padding:20px 0 30px 0;">
     <h1 style="font-size:2.5rem;margin-bottom:8px;">🔬 Systematic Review Bot</h1>
     <p style="color:#8b949e;font-size:1.1rem;margin:0;">
-    Upload CSV/BIB → Auto-Screen E1/E2/E7 → Fetch Abstracts → Post-fetch Language Check → 3 Workbooks + Word
+    Upload CSV/BIB → Auto-Screen → Fetch Abstracts + Keywords → 3 Workbooks + Word
     </p></div>
     """, unsafe_allow_html=True)
     st.markdown("---")
@@ -809,8 +841,7 @@ with tab1:
     with col_rst1:
         st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
         if st.button("🔄 Reset / New Run", key="reset_tab1", use_container_width=True):
-            st.session_state.clear()
-            st.rerun()
+            st.session_state.clear(); st.rerun()
     st.caption("Supports: Springer CSV · Scopus CSV · Google Scholar CSV (Publish or Perish) · ACM BibTeX")
 
     uploaded = st.file_uploader("Drop all files here", type=["csv","bib"],
@@ -841,23 +872,18 @@ with tab1:
             all_papers.extend(papers)
 
         unique, dupe_list = deduplicate(all_papers)
-
-        # Auto-screen silently (no UI block)
         unique, auto_counts = auto_screen(unique)
-
         pending = [p for p in unique if p.get("screening_status")=="Pending"]
         stats.update({
             "total_raw":len(all_papers), "duplicates":len(dupe_list),
             "after_dedup":len(unique), "auto_total":sum(v for k,v in auto_counts.items() if k!="E1_recovered"),
         })
 
-        # Step 2: Parse log
         st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📊 Step 2 — Files Parsed</h3></div>',unsafe_allow_html=True)
         for fname,db,qid,n in parse_log:
             db_cls={"Springer":"springer","ACM":"acm","Elsevier/Scopus":"scopus","Google Scholar":"scholar"}.get(db,"springer")
             st.markdown(f"<div style='margin:4px 0;'><code>{fname}</code> → <span class='tag tag-{db_cls}'>{db}</span> <code>{qid}</code> → <b>{n} papers</b></div>",unsafe_allow_html=True)
 
-        # Step 3: Summary
         st.markdown("---")
         st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📈 Step 3 — Summary by Dimension</h3></div>',unsafe_allow_html=True)
         c1,c2,c3,c4=st.columns(4)
@@ -870,13 +896,12 @@ with tab1:
             summary=" / ".join(f"{k}:{v}" for k,v in sorted(d_counts.items()))
             st.markdown(f'<div class="stat-box"><div class="stat-num" style="font-size:1.1rem">{summary}</div><div class="stat-lbl">By Dimension</div></div>',unsafe_allow_html=True)
 
-        # Step 5: Generate
         st.markdown("---")
         need_abstract=[p for p in pending if p.get("doi","").strip() or p.get("url","").strip()]
         est_mins=max(1,len(need_abstract)//15)
-        st.markdown(f'<div class="sr-card"><h3 style="margin-top:0;">🚀 Step 4 — Generate Workbooks</h3><p style="color:#8b949e;margin-bottom:0;">Fetch abstracts for <b>{len(need_abstract)} pending papers</b> · post-fetch language check · 3 Excel workbooks + Word (~{est_mins} min)</p></div>',unsafe_allow_html=True)
+        st.markdown(f'<div class="sr-card"><h3 style="margin-top:0;">🚀 Step 4 — Generate Workbooks</h3><p style="color:#8b949e;margin-bottom:0;">Fetch abstracts + keywords for <b>{len(need_abstract)} pending papers</b> · 3 Excel workbooks + Word (~{est_mins} min)</p></div>',unsafe_allow_html=True)
 
-        fetch_toggle=st.checkbox("Fetch abstracts automatically",value=True)
+        fetch_toggle=st.checkbox("Fetch abstracts + keywords automatically",value=True)
         with st.expander("⚙️ Advanced Options"):
             max_workers=st.slider("Concurrent fetch workers",1,5,3)
             st.info("PDFs, blocked sites, Scopus inward links auto-skipped.")
@@ -888,7 +913,7 @@ with tab1:
 
             if fetch_toggle and need_abstract:
                 t0=time.time(); total=len(need_abstract)
-                s_txt.markdown("🔄 **Fetching abstracts...**")
+                s_txt.markdown("🔄 **Fetching abstracts + keywords...**")
 
                 pdf_c=sum(1 for p in need_abstract if _is_pdf(p.get("url","")))
                 blk_c=sum(1 for p in need_abstract if _is_blocked(p.get("url","")))
@@ -898,13 +923,16 @@ with tab1:
 
                 results={}; found=completed=0
 
-                def fetch_one(ip): i,p=ip; return i,fetch_abstract_for_paper(p)
+                def fetch_one(ip):
+                    i,p=ip
+                    abstract, keywords = fetch_abstract_and_keywords_for_paper(p)
+                    return i, abstract, keywords
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
                     futures={ex.submit(fetch_one,(i,p)):i for i,p in enumerate(need_abstract)}
                     for future in concurrent.futures.as_completed(futures):
-                        idx,abstract=future.result()
-                        results[idx]=abstract
+                        idx,abstract,keywords=future.result()
+                        results[idx]=(abstract,keywords)
                         if abstract: found+=1
                         completed+=1
                         pct=int((completed/total)*100)
@@ -914,21 +942,21 @@ with tab1:
                         m,s=divmod(int((total-completed)/rate),60)
                         d_txt.markdown(f"**{pct}%** · ⏱ {m}m {s}s remaining · ✅ {found} fetched · {completed}/{total}")
 
-                for idx,abstract in results.items():
-                    need_abstract[idx]["abstract"]=abstract
+                for idx,(abstract,keywords) in results.items():
+                    if abstract: need_abstract[idx]["abstract"]=abstract
+                    if keywords and not need_abstract[idx].get("keywords",""):
+                        need_abstract[idx]["keywords"]=keywords
 
                 prog.progress(1.0)
-                s_txt.markdown(f"✅ **Abstracts done!** {found}/{total} in {int(time.time()-t0)}s")
+                s_txt.markdown(f"✅ **Done!** {found}/{total} abstracts in {int(time.time()-t0)}s")
                 d_txt.empty()
 
-                # Post-fetch language check
-                s_txt.markdown("🌐 **Post-fetch language check on title+abstract...**")
+                s_txt.markdown("🌐 **Post-fetch language check...**")
                 unique, pf_flagged = post_fetch_language_check(unique)
                 if pf_flagged > 0:
-                    st.markdown(f'<div class="warn-box">⚠️ <b>{pf_flagged} papers</b> flagged E2 post-fetch (abstract not English)</div>',unsafe_allow_html=True)
+                    st.markdown(f'<div class="warn-box">⚠️ <b>{pf_flagged} papers</b> flagged E2 post-fetch</div>',unsafe_allow_html=True)
                 s_txt.empty()
 
-            # Build Excel
             s_txt.markdown("📊 **Building dimension workbooks...**")
             for dim_code,dim_name in DIMENSION_NAMES.items():
                 excel_bytes=build_dimension_excel(unique,dupe_list,dim_code,dim_name)
@@ -936,13 +964,12 @@ with tab1:
                     st.session_state[f"excel_{dim_code}"]=excel_bytes
                     st.session_state[f"fname_{dim_code}"]=f"{dim_name}_{datetime.now():%Y%m%d_%H%M}.xlsx"
 
-            # Build Word
             s_txt.markdown("📝 **Generating Word template...**")
             try:
                 st.session_state["word_bytes"]=generate_word()
                 st.session_state["word_fname"]=f"SR_Method_Findings_{datetime.now():%Y%m%d_%H%M}.docx"
             except Exception as e:
-                st.warning(f"Word failed: {e} — install python-docx")
+                st.warning(f"Word failed: {e}")
 
             st.session_state["excel_ready"]=True
             st.session_state["total"]=stats["after_dedup"]
@@ -951,7 +978,6 @@ with tab1:
             st.session_state["auto_total"]=stats.get("auto_total",0)
             s_txt.empty(); prog.empty()
 
-        # Step 6: Download
         if st.session_state.get("excel_ready"):
             st.markdown("---")
             st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📥 Step 5 — Download</h3></div>',unsafe_allow_html=True)
@@ -959,7 +985,7 @@ with tab1:
             for dim_code in ["D1","D2","D3"]:
                 if f"excel_{dim_code}" in st.session_state:
                     dim_name=DIMENSION_NAMES[dim_code]
-                    st.markdown(f'<div class="sheet-card"><b>{dim_name}</b> — PRISMA Flow · Screening (auto+manual) · Duplicates · Missing Year/DOI · Concept Matrix · Exclusion Criteria</div>',unsafe_allow_html=True)
+                    st.markdown(f'<div class="sheet-card"><b>{dim_name}</b> — PRISMA · Screening (full authors + keywords) · Google Scholar · Concept Matrix · Exclusion Criteria</div>',unsafe_allow_html=True)
                     st.download_button(f"📥 Download {dim_name}",
                         data=st.session_state[f"excel_{dim_code}"],
                         file_name=st.session_state[f"fname_{dim_code}"],
@@ -967,7 +993,7 @@ with tab1:
                         key=f"dl_{dim_code}")
             if "word_bytes" in st.session_state:
                 st.markdown("#### 📝 Word Template")
-                st.markdown('<div class="sheet-card"><b>Method & Findings Template</b> — Intro · Methodology · Search Strings · PRISMA · 3 Dimension Findings · Discussion · Conclusion</div>',unsafe_allow_html=True)
+                st.markdown('<div class="sheet-card"><b>Method & Findings Template</b></div>',unsafe_allow_html=True)
                 st.download_button("📥 Download Word Template",
                     data=st.session_state["word_bytes"],
                     file_name=st.session_state["word_fname"],
@@ -1017,27 +1043,16 @@ with tab2:
     }
 
     def extract_keywords(raw):
-        """
-        Extract all keywords from search string.
-        Strips AND/OR/NOT/+ completely. Handles malformed/unclosed quotes.
-        """
         cleaned = raw
-        # Remove + separator lines
         cleaned = re.sub(r'(?m)^\s*\+\s*$', ' ', cleaned)
-        # Remove AND/OR/NOT operators
         cleaned = re.sub(r'\bAND\b', ' ', cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r'\bOR\b',  ' ', cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r'\bNOT\b', ' ', cleaned, flags=re.IGNORECASE)
-        # Remove parens, +, newlines
         cleaned = re.sub(r'[+()\n\r]', ' ', cleaned)
-
-        # Extract valid quoted phrases (2+ chars)
         quoted = []
         for m in re.finditer(r'"([^"]{2,})"', cleaned):
             t = m.group(1).strip().lower()
             if t: quoted.append(t)
-
-        # Remove quoted content + stray quotes, get single tokens
         no_quotes = re.sub(r'"[^"]*"', ' ', cleaned).replace('"', ' ')
         singles = []
         for token in no_quotes.split():
@@ -1046,8 +1061,6 @@ with tab2:
             tl = t.lower()
             if tl in ('and','or','not'): continue
             singles.append(tl)
-
-        # Deduplicate preserving order
         seen = set(); result = []
         for t in quoted + singles:
             t = t.strip()
@@ -1055,7 +1068,6 @@ with tab2:
         return result
 
     def expand_keywords(terms):
-        """Add US/UK spelling variants automatically."""
         expanded = list(terms)
         for term in terms:
             words = term.lower().split()
@@ -1070,38 +1082,17 @@ with tab2:
         return expanded
 
     def screen_paper(title, abstract, keywords):
-        """
-        Returns (status, reason, note) based on what data is available.
-
-        Rules:
-        - Title + Abstract both present:
-            → keyword in either → Include
-            → no keyword in either → Exclude E4
-        - Title only (abstract empty):
-            → keyword in title → Include
-            → no keyword in title → Pending (can't confirm exclude without abstract)
-        - No title and no abstract:
-            → Pending (nothing to screen)
-        """
         has_title    = bool(title.strip())
         has_abstract = bool(abstract.strip())
-
         title_hits    = [kw for kw in keywords if kw in title.lower()]    if has_title    else []
         abstract_hits = [kw for kw in keywords if kw in abstract.lower()] if has_abstract else []
         all_hits = list(set(title_hits + abstract_hits))
-
         if has_title and has_abstract:
-            if all_hits:
-                return "Include", "", f"Match in title+abstract: {', '.join(all_hits[:5])}"
-            else:
-                return "Exclude", "E4", "No keyword match in title or abstract"
-
+            if all_hits: return "Include", "", f"Match in title+abstract: {', '.join(all_hits[:5])}"
+            else:        return "Exclude", "E4", "No keyword match in title or abstract"
         elif has_title and not has_abstract:
-            if title_hits:
-                return "Include", "", f"Match in title: {', '.join(title_hits[:5])}"
-            else:
-                return "Pending", "", "No title keyword match — abstract missing, check manually"
-
+            if title_hits: return "Include", "", f"Match in title: {', '.join(title_hits[:5])}"
+            else:          return "Pending", "", "No title keyword match — abstract missing, check manually"
         else:
             return "Pending", "", "No title or abstract — check manually"
 
@@ -1113,8 +1104,7 @@ with tab2:
         with col_reset:
             st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
             if st.button("🔄 Reset / New File", key="reset_screener", use_container_width=True):
-                st.session_state.clear()
-                st.rerun()
+                st.session_state.clear(); st.rerun()
         screener_xl = st.file_uploader("Upload Excel (.xlsx)", type=["xlsx"], key="screener_upload")
 
     with col_r:
@@ -1124,7 +1114,6 @@ with tab2:
             label_visibility="collapsed", key="search_input")
 
     if screener_xl and search_input.strip():
-        # Reset kw_parsed if file changes
         file_id = screener_xl.name + str(screener_xl.size)
         if st.session_state.get("screener_file_id") != file_id:
             st.session_state["screener_file_id"] = file_id
@@ -1136,25 +1125,24 @@ with tab2:
         if not keywords:
             st.error("No keywords found — check your search strings.")
         else:
-            # Show keywords with Parse button step
             col_parse, _ = st.columns([1,2])
             with col_parse:
                 parse_clicked = st.button("✅ Parse Keywords", use_container_width=True, key="parse_btn")
-            
             if parse_clicked or st.session_state.get("kw_parsed"):
                 st.session_state["kw_parsed"] = True
                 st.session_state["current_keywords"] = keywords
-                with st.expander(f"📋 {len(keywords)} keywords extracted (with US/UK variants) — click to verify", expanded=True):
+                with st.expander(f"📋 {len(keywords)} keywords (with US/UK variants) — verify", expanded=True):
                     st.markdown(", ".join(f"`{k}`" for k in keywords))
-                    st.caption("If a keyword looks wrong, fix your search string above and click Parse again.")
+                    st.caption("Fix search string above and click Parse again if needed.")
                 st.markdown("---")
 
             if st.session_state.get("kw_parsed") and st.button("🔍 Screen Papers", type="primary", use_container_width=True, key="screen_btn"):
                 keywords = st.session_state.get("current_keywords", keywords)
                 import openpyxl
                 from openpyxl.styles import PatternFill
-                INC = PatternFill("solid", start_color="D5E8D4")
-                EXC = PatternFill("solid", start_color="FFE0E0")
+                INC  = PatternFill("solid", start_color="D5E8D4")
+                EXC  = PatternFill("solid", start_color="FFE0E0")
+                PEND = PatternFill("solid", start_color="FFF8DC")
 
                 wb = openpyxl.load_workbook(io.BytesIO(screener_xl.read()))
                 inc_tot = exc_tot = skip_tot = pend_tot = 0
@@ -1195,8 +1183,7 @@ with tab2:
                         elif status_new == "Exclude":
                             for ci in range(1, ws.max_column+1): ws.cell(ri, ci).fill = EXC
                             exc_tot += 1
-                        else:  # Pending
-                            PEND = PatternFill("solid", start_color="FFF8DC")
+                        else:
                             for ci in range(1, ws.max_column+1): ws.cell(ri, ci).fill = PEND
                             pend_tot += 1
 
@@ -1212,7 +1199,7 @@ with tab2:
                 with c3: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#e3b341">{pend_tot}</div><div class="stat-lbl">⏳ Pending</div></div>', unsafe_allow_html=True)
                 with c4: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#8b949e">{skip_tot}</div><div class="stat-lbl">⏭️ Skipped</div></div>', unsafe_allow_html=True)
                 with c5: st.markdown(f'<div class="stat-box"><div class="stat-num">{inc_tot+exc_tot+pend_tot+skip_tot}</div><div class="stat-lbl">Total</div></div>', unsafe_allow_html=True)
-                st.markdown('<div class="warn-box">🟢 Include = keyword match in both fields &nbsp;|&nbsp; 🔴 Exclude E4 = no match in title+abstract &nbsp;|&nbsp; 🟡 Pending = abstract missing, check manually</div>', unsafe_allow_html=True)
+                st.markdown('<div class="warn-box">🟢 Include = keyword match · 🔴 Exclude E4 = no match in title+abstract · 🟡 Pending = abstract missing</div>', unsafe_allow_html=True)
 
                 buf = io.BytesIO(); wb.save(buf); buf.seek(0)
                 st.download_button("📥 Download Screened Excel", data=buf.read(),
@@ -1228,11 +1215,11 @@ with tab2:
         <ol style="color:#8b949e;line-height:2.2;">
         <li>Run <b>File Importer tab</b> → download Excel</li>
         <li>Upload that Excel here</li>
-        <li>Paste search strings (separate queries with a line containing just <code>+</code>)</li>
-        <li>Click <b>Screen Papers</b></li>
-        <li>App checks title + abstract → Include / Exclude (E4)</li>
+        <li>Paste search strings (separate queries with <code>+</code> on its own line)</li>
+        <li>Click <b>✅ Parse Keywords</b> → verify extracted terms</li>
+        <li>Click <b>🔍 Screen Papers</b></li>
         <li>Download updated Excel</li>
         </ol>
-        <p style="color:#8b949e;font-size:0.85rem;">Already auto-excluded papers are skipped. Include = any query matched fully (all AND-groups satisfied).</p>
+        <p style="color:#8b949e;font-size:0.85rem;">Already auto-excluded rows skipped. Include = keyword in title or abstract. Pending = abstract missing.</p>
         </div>
         """, unsafe_allow_html=True)
