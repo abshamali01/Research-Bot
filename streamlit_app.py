@@ -1,16 +1,8 @@
 """
-Systematic Review Bot v12.1
+Systematic Review Bot v9
 3 Dimensions: D1 Standardization & AI, D2 Context Engineering, D3 Token Efficiency
 PRISMA 2020 + Auto E1/E2/E7 + Year Recovery + Post-fetch Language Check + Word Template
-
-Updates in v12:
-- Full Authors column
-- Recover missing authors from CrossRef, Semantic Scholar, OpenAlex, and publisher HTML
-- Keywords column
-- PDF authors extracted as full comma-separated list, e.g. "Kashif Imteyaz, Michael Muller, Claudia Flores-Saviaga, Saiph Savage"
-- PDF keywords extracted ONLY from an official heading such as "Keywords:", "Key words:", or "Index Terms:"
-- If no official keyword heading is found in the PDF, the Keywords cell remains empty
-- PDF upload support using PyMuPDF
+New: Full authors (no truncation) + Keywords column extracted from all databases
 """
 
 import streamlit as st
@@ -18,7 +10,7 @@ import pandas as pd
 import io, re, csv, time, concurrent.futures, threading
 from datetime import datetime
 
-st.set_page_config(page_title="SR Bot v12.1", page_icon="🔬", layout="wide")
+st.set_page_config(page_title="SR Bot", page_icon="🔬", layout="wide")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 QUERY_MAP = {
@@ -26,13 +18,11 @@ QUERY_MAP = {
     "D2Q1": "D2_Context_Engineering", "D2Q2": "D2_Context_Engineering", "D2Q3": "D2_Context_Engineering",
     "D3Q1": "D3_Token_Efficiency",   "D3Q2": "D3_Token_Efficiency",   "D3Q3": "D3_Token_Efficiency",
 }
-
 DIMENSION_NAMES = {
     "D1": "D1_Standardization_AI",
     "D2": "D2_Context_Engineering",
     "D3": "D3_Token_Efficiency",
 }
-
 EXCLUSION_CRITERIA = [
     "E1: Outside year range (2015-2026)",
     "E2: Not English",
@@ -49,559 +39,161 @@ EXCLUSION_CRITERIA = [
 def _paper(title="", authors="", year="", source="", doi="", url="", ptype="",
            database="", query_id="", keywords=""):
     return {
-        "title": title,
-        "authors": authors,
-        "year": str(year),
-        "source": source,
-        "doi": doi,
-        "abstract": "",
-        "url": url,
-        "type": ptype,
-        "database": database,
-        "query_id": query_id,
+        "title": title, "authors": authors, "year": str(year), "source": source,
+        "doi": doi, "abstract": "", "url": url, "type": ptype,
+        "database": database, "query_id": query_id,
         "dimension": QUERY_MAP.get(query_id, ""),
         "keywords": keywords,
-        "screening_status": "Pending",
-        "exclusion_reason": "",
-        "notes": "",
+        "screening_status": "Pending", "exclusion_reason": "", "notes": "",
         "auto_excluded": False,
     }
-
 
 def parse_springer_csv(content, qid):
     papers = []
     try:
         for row in csv.DictReader(io.StringIO(content)):
             papers.append(_paper(
-                title=row.get("Item Title", "").strip(),
-                authors=row.get("Authors", "").strip(),
-                year=str(row.get("Publication Year", "")).strip(),
-                source=(row.get("Publication Title", "") or row.get("Book Series Title", "")).strip(),
-                doi=row.get("Item DOI", "").strip(),
-                url=row.get("ArticleURL", "").strip() or row.get("URL", "").strip(),
-                ptype=row.get("Content Type", "").strip(),
-                database="Springer",
-                query_id=qid,
-                keywords=row.get("Keywords", "").strip() or row.get("Author Keywords", "").strip()
-            ))
-    except Exception as e:
-        st.warning(f"Springer parse error: {e}")
+                title=row.get("Item Title","").strip(),
+                authors=row.get("Authors","").strip(),
+                year=str(row.get("Publication Year","")).strip(),
+                source=(row.get("Publication Title","") or row.get("Book Series Title","")).strip(),
+                doi=row.get("Item DOI","").strip(),
+                url=row.get("ArticleURL","").strip() or row.get("URL","").strip(),
+                ptype=row.get("Content Type","").strip(),
+                database="Springer", query_id=qid,
+                keywords=row.get("Keywords","").strip() or row.get("Author Keywords","").strip()))
+    except Exception as e: st.warning(f"Springer parse error: {e}")
     return papers
-
 
 def parse_scopus_csv(content, qid):
     papers = []
     try:
         for row in csv.DictReader(io.StringIO(content)):
-            kw = "; ".join(filter(None, [
-                row.get("Author Keywords", "").strip(),
-                row.get("Index Keywords", "").strip()
-            ]))
+            kw = "; ".join(filter(None,[row.get("Author Keywords","").strip(), row.get("Index Keywords","").strip()]))
             papers.append(_paper(
-                title=row.get("Title", "").strip(),
-                authors=row.get("Authors", "").strip(),
-                year=str(row.get("Year", "")).strip(),
-                source=row.get("Source title", "").strip(),
-                doi=row.get("DOI", "").strip(),
-                url=row.get("Link", "").strip(),
-                ptype=row.get("Document Type", "").strip(),
-                database="Elsevier/Scopus",
-                query_id=qid,
-                keywords=kw
-            ))
-    except Exception as e:
-        st.warning(f"Scopus parse error: {e}")
+                title=row.get("Title","").strip(),
+                authors=row.get("Authors","").strip(),
+                year=str(row.get("Year","")).strip(),
+                source=row.get("Source title","").strip(),
+                doi=row.get("DOI","").strip(),
+                url=row.get("Link","").strip(),
+                ptype=row.get("Document Type","").strip(),
+                database="Elsevier/Scopus", query_id=qid,
+                keywords=kw))
+    except Exception as e: st.warning(f"Scopus parse error: {e}")
     return papers
-
 
 def parse_scopus_pop_csv(content, qid):
     papers = []
     try:
         for row in csv.DictReader(io.StringIO(content)):
             papers.append(_paper(
-                title=row.get("Title", "").strip(),
-                authors=row.get("Authors", "").strip(),
-                year=str(row.get("Year", "")).strip(),
-                source=row.get("Source", "").strip(),
-                doi=row.get("DOI", "").strip(),
-                url=row.get("ArticleURL", "").strip(),
-                ptype=row.get("Type", "Article").strip(),
-                database="Elsevier/Scopus",
-                query_id=qid,
-                keywords=row.get("Keywords", "").strip() or row.get("Author Keywords", "").strip()
-            ))
-    except Exception as e:
-        st.warning(f"Scopus PoP parse error: {e}")
+                title=row.get("Title","").strip(),
+                authors=row.get("Authors","").strip(),
+                year=str(row.get("Year","")).strip(),
+                source=row.get("Source","").strip(),
+                doi=row.get("DOI","").strip(),
+                url=row.get("ArticleURL","").strip(),
+                ptype=row.get("Type","Article").strip(),
+                database="Elsevier/Scopus", query_id=qid,
+                keywords=row.get("Keywords","").strip() or row.get("Author Keywords","").strip()))
+    except Exception as e: st.warning(f"Scopus PoP parse error: {e}")
     return papers
-
 
 def parse_scholar_csv(content, qid):
     papers = []
     try:
         for row in csv.DictReader(io.StringIO(content)):
             papers.append(_paper(
-                title=row.get("Title", "").strip(),
-                authors=row.get("Authors", "").strip(),
-                year=str(row.get("Year", "")).strip(),
-                source=row.get("Source", "").strip(),
-                doi=row.get("DOI", "").strip(),
-                url=row.get("ArticleURL", "").strip() or row.get("URL", "").strip(),
-                ptype=row.get("Type", "article").strip(),
-                database="Google Scholar",
-                query_id=qid,
-                keywords=row.get("Keywords", "").strip()
-            ))
-    except Exception as e:
-        st.warning(f"Scholar parse error: {e}")
+                title=row.get("Title","").strip(),
+                authors=row.get("Authors","").strip(),
+                year=str(row.get("Year","")).strip(),
+                source=row.get("Source","").strip(),
+                doi=row.get("DOI","").strip(),
+                url=row.get("ArticleURL","").strip() or row.get("URL","").strip(),
+                ptype=row.get("Type","article").strip(),
+                database="Google Scholar", query_id=qid,
+                keywords=row.get("Keywords","").strip()))
+    except Exception as e: st.warning(f"Scholar parse error: {e}")
     return papers
-
-
-
-def _normalize_authors_commas(authors):
-    """
-    Normalize author names to:
-    Kashif Imteyaz, Michael Muller, Claudia Flores-Saviaga, Saiph Savage
-    """
-    if not authors:
-        return ""
-
-    authors = re.sub(r"\s+", " ", authors).strip(" ,;")
-    authors = authors.replace(" and ", ", ")
-    authors = authors.replace(" AND ", ", ")
-    authors = authors.replace(";", ",")
-    authors = re.sub(r"\s*,\s*", ", ", authors)
-    authors = re.sub(r",\s*,+", ", ", authors)
-    authors = re.sub(r"\s{2,}", " ", authors)
-    return authors.strip(" ,;")
 
 def parse_bib(content, qid):
     papers = []
-
     for entry in re.split(r'\n@', content):
-        if not entry.strip():
-            continue
-
-        if not entry.startswith('@'):
-            entry = '@' + entry
-
+        if not entry.strip(): continue
+        if not entry.startswith('@'): entry = '@' + entry
         def gf(field, text):
-            pat = (
-                rf'{re.escape(field)}\s*=\s*\{{(.+?)\}}\s*[,\}}]|'
-                rf'{re.escape(field)}\s*=\s*"(.+?)"\s*[,\}}]'
-            )
-            m = re.search(pat, text, re.IGNORECASE | re.DOTALL)
-            if m:
-                r = m.group(1) if m.group(1) else m.group(2)
-                return r.strip().replace('\n', ' ')
+            pat = rf'{re.escape(field)}\s*=\s*\{{(.+?)\}}\s*[,\}}]|{re.escape(field)}\s*=\s*"(.+?)"\s*[,\}}]'
+            m = re.search(pat, text, re.IGNORECASE|re.DOTALL)
+            if m: r = m.group(1) if m.group(1) else m.group(2); return r.strip().replace('\n',' ')
             return ""
-
         papers.append(_paper(
-            title=gf("title", entry),
-            authors=_normalize_authors_commas(gf("author", entry)),
-            year=gf("year", entry),
-            source=gf("booktitle", entry) or gf("journal", entry),
-            doi=gf("doi", entry),
-            url=gf("url", entry),
+            title=gf("title",entry), authors=gf("author",entry), year=gf("year",entry),
+            source=gf("booktitle",entry) or gf("journal",entry), doi=gf("doi",entry),
+            url=gf("url",entry),
             ptype="Conference Paper" if "inproceedings" in entry[:30].lower() else "Article",
-            database="ACM",
-            query_id=qid,
-            keywords=gf("keywords", entry) or gf("keyword", entry)
-        ))
-
+            database="ACM", query_id=qid,
+            keywords=gf("keywords",entry) or gf("keyword",entry)))
     return [p for p in papers if p["title"]]
 
-
-# ── PDF Parser: official authors + official keywords from PDF ─────────────────
-def _safe_import_fitz():
-    try:
-        import fitz  # PyMuPDF
-        return fitz
-    except Exception:
-        return None
-
-
-def _normalize_pdf_text(text):
-    text = text or ""
-    text = text.replace("\x00", " ")
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
-
-def _extract_doi_from_text(text):
-    if not text:
-        return ""
-    m = re.search(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+", text, flags=re.I)
-    return m.group(0).rstrip(".,;)") if m else ""
-
-
-def _extract_year_from_text(text):
-    m = re.search(r"\b(20[1-2][0-9]|2015|2016|2017|2018|2019|2020|2021|2022|2023|2024|2025|2026)\b", text or "")
-    return m.group(1) if m else ""
-
-
-def _extract_pdf_abstract(text):
-    if not text:
-        return ""
-
-    patterns = [
-        r"\bAbstract\b\s*[:\-]?\s*(.*?)(?=\n\s*Keywords?\s*[:\-]|\n\s*Key words\s*[:\-]|\n\s*1\.?\s+Introduction\b|\n\s*Introduction\b)",
-        r"\bABSTRACT\b\s*[:\-]?\s*(.*?)(?=\n\s*KEYWORDS?\s*[:\-]|\n\s*KEY WORDS\s*[:\-]|\n\s*1\.?\s+INTRODUCTION\b|\n\s*INTRODUCTION\b)",
-    ]
-
-    for pat in patterns:
-        m = re.search(pat, text, flags=re.I | re.S)
-        if m:
-            ab = _clean(m.group(1))
-            if 50 < len(ab) < 6000:
-                return ab
-
-    return ""
-
-
-def _extract_pdf_keywords(text):
-    """
-    Extract ONLY official keywords written under/near the abstract.
-
-    Accepted headings:
-    - Keywords:
-    - Keyword:
-    - Key words:
-    - Index Terms:
-
-    If this heading is not found, return empty string.
-    No AI/concept/API fallback is used for PDF keywords.
-    """
-    if not text:
-        return ""
-
-    # Keep line structure because keyword heading is normally visible as a line/block.
-    t = text.replace("\r", "\n")
-    t = re.sub(r"[ \t]+", " ", t)
-
-    patterns = [
-        r"(?is)\bKeywords?\s*[:\-]\s*(.+?)(?=\n\s*(?:1\.?\s+)?Introduction\b|\n\s*INTRODUCTION\b|\n\s*I\.\s*INTRODUCTION\b|\n\s*Categories and Subject Descriptors\b|\n\s*CCS Concepts\b|\n\s*ACM Reference Format\b|\n\s*©|\n\s*Copyright\b|\n\s*Received\b)",
-        r"(?is)\bKey\s+words\s*[:\-]\s*(.+?)(?=\n\s*(?:1\.?\s+)?Introduction\b|\n\s*INTRODUCTION\b|\n\s*I\.\s*INTRODUCTION\b|\n\s*©|\n\s*Copyright\b)",
-        r"(?is)\bIndex\s+Terms\s*[:\-]\s*(.+?)(?=\n\s*(?:1\.?\s+)?Introduction\b|\n\s*INTRODUCTION\b|\n\s*I\.\s*INTRODUCTION\b|\n\s*©|\n\s*Copyright\b)",
-    ]
-
-    for pat in patterns:
-        m = re.search(pat, t)
-        if not m:
-            continue
-
-        kw = m.group(1)
-        kw = re.sub(r"\s*\n\s*", " ", kw)
-        kw = re.sub(r"\s{2,}", " ", kw).strip(" .;:")
-
-        # Stop if a section title accidentally enters the capture.
-        kw = re.split(
-            r"\b(?:Abstract|Introduction|Background|Methodology|Methods|Results|Conclusion|References)\b",
-            kw,
-            maxsplit=1,
-            flags=re.I
-        )[0].strip(" .;:")
-
-        # Normalize separators but keep author-provided wording.
-        kw = re.sub(r"\s*[,|]\s*", "; ", kw)
-        kw = re.sub(r"\s*;\s*", "; ", kw)
-        kw = kw.strip(" ;")
-
-        # Reject if too long because then it is probably not only keywords.
-        if 3 <= len(kw) <= 600:
-            return kw
-
-    return ""
-
-
-def _extract_title_from_pdf_lines(lines, meta_title=""):
-    if meta_title and len(meta_title.strip()) > 8 and not meta_title.lower().endswith(".pdf"):
-        return meta_title.strip()
-
-    ignore = {
-        "abstract", "keywords", "keyword", "introduction", "research article",
-        "original article", "conference paper", "proceedings", "contents"
-    }
-
-    clean_lines = []
-    for ln in lines[:60]:
-        ln = re.sub(r"\s+", " ", ln).strip()
-        if not ln:
-            continue
-        if ln.lower() in ignore:
-            continue
-        if ln.lower().startswith(("doi:", "http", "www.", "copyright", "©")):
-            continue
-        if len(ln) < 8:
-            continue
-        clean_lines.append(ln)
-
-    # Usually the title is the first long meaningful line before Abstract.
-    for ln in clean_lines[:15]:
-        if len(ln.split()) >= 4:
-            return ln
-
-    return clean_lines[0] if clean_lines else ""
-
-
-def _extract_authors_from_pdf_lines(lines, title="", doi_authors=""):
-    """
-    Prefer DOI/API authors. If unavailable, use first-page heuristic.
-    Output format:
-    Kashif Imteyaz, Michael Muller, Claudia Flores-Saviaga, Saiph Savage
-    """
-    if doi_authors:
-        return _normalize_authors_commas(doi_authors)
-
-    if not lines:
-        return ""
-
-    # Locate Abstract. Authors are normally between title and abstract.
-    abstract_pos = None
-    for i, ln in enumerate(lines):
-        clean = re.sub(r"\s+", " ", ln).strip().lower()
-        if clean == "abstract" or clean.startswith("abstract "):
-            abstract_pos = i
-            break
-
-    pre = lines[:abstract_pos] if abstract_pos else lines[:45]
-    pre = [re.sub(r"\s+", " ", x).strip() for x in pre if re.sub(r"\s+", " ", x).strip()]
-
-    # Find title index if possible, then start after title.
-    start_idx = 0
-    if title:
-        for i, ln in enumerate(pre):
-            if ln.strip() == title.strip() or title.strip() in ln.strip():
-                start_idx = i + 1
-                break
-
-    block = pre[start_idx:start_idx + 12]
-
-    cleaned = []
-    for ln in block:
-        low = ln.lower()
-
-        if low in ("abstract", "research article", "original article", "conference paper", "proceedings"):
-            continue
-        if low.startswith(("doi", "http", "www", "received", "accepted", "published", "keywords", "keyword")):
-            continue
-        if "@" in ln:
-            continue
-        if re.search(r"\b(university|department|institute|school|faculty|laboratory|lab |centre|center|college|campus|street|avenue|road|city|country)\b", low):
-            continue
-        if re.search(r"\b(abstract|introduction|copyright|permission|licensed|journal|conference|workshop)\b", low):
-            continue
-        if len(ln) < 4 or len(ln) > 220:
-            continue
-
-        # Remove common affiliation markers/superscripts.
-        ln = re.sub(r"[\*\†\‡\§]", "", ln)
-        ln = re.sub(r"\b\d+\b", "", ln)
-        ln = re.sub(r"\s{2,}", " ", ln).strip(" ,;")
-        if ln:
-            cleaned.append(ln)
-
-    if not cleaned:
-        return ""
-
-    # Join likely author lines until an affiliation-like or too-long line appears.
-    author_text = " ".join(cleaned[:4])
-
-    # Some PDFs put all authors on one line with commas already.
-    author_text = re.sub(r"\s+(and|AND)\s+", ", ", author_text)
-    author_text = author_text.replace(";", ",")
-
-    # If names are separated only by multiple spaces, try to preserve them reasonably.
-    author_text = re.sub(r"\s*,\s*", ", ", author_text)
-    author_text = re.sub(r",\s*,+", ", ", author_text)
-    author_text = re.sub(r"\s{2,}", " ", author_text).strip(" ,;")
-
-    return _normalize_authors_commas(author_text)
-
-
-def parse_pdf_bytes(pdf_bytes, qid, fname=""):
-    """
-    Parse a PDF paper directly:
-    - all authors via DOI API when DOI exists
-    - official keywords from the PDF 'Keywords:' line under abstract
-    - abstract from PDF
-    """
-    papers = []
-    fitz = _safe_import_fitz()
-
-    if fitz is None:
-        st.error("PDF support needs PyMuPDF. Install it with: pip install pymupdf")
-        return papers
-
-    try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        meta = doc.metadata or {}
-
-        page_texts = []
-        for i in range(min(len(doc), 5)):
-            page_texts.append(doc[i].get_text("text"))
-
-        first_page = _normalize_pdf_text(page_texts[0] if page_texts else "")
-        full_text = _normalize_pdf_text("\n".join(page_texts))
-        lines = [ln.strip() for ln in first_page.splitlines() if ln.strip()]
-
-        doi = _extract_doi_from_text(full_text)
-        title = _extract_title_from_pdf_lines(lines, meta.get("title", ""))
-        year = _extract_year_from_text(full_text)
-        abstract = _extract_pdf_abstract(full_text)
-        keywords = _extract_pdf_keywords(full_text)
-
-        doi_authors = ""
-        if doi:
-            try:
-                _, _, doi_authors = fetch_crossref_data(doi, title)
-                if not doi_authors:
-                    _, _, doi_authors = fetch_semantic_scholar_data(doi)
-                if not doi_authors:
-                    _, _, doi_authors = fetch_openalex_data(doi)
-            except Exception:
-                doi_authors = ""
-
-        authors = _normalize_authors_commas(_extract_authors_from_pdf_lines(lines, title, doi_authors))
-
-        p = _paper(
-            title=title,
-            authors=authors,
-            year=year,
-            source="PDF Upload",
-            doi=doi,
-            url="",
-            ptype="Article",
-            database="PDF",
-            query_id=qid,
-            keywords=keywords
-        )
-        p["abstract"] = abstract
-        if not keywords:
-            p["notes"] = "PDF parsed. Official Keywords heading not found, so Keywords kept empty."
-        papers.append(p)
-
-    except Exception as e:
-        st.warning(f"PDF parse error for {fname}: {e}")
-
-    return papers
-
-
 def detect_csv_type(content, fname=""):
-    lines = content.split('\n')
-    first = lines[0].lower() if lines else ""
-    second = lines[1].lower() if len(lines) > 1 else ""
-
-    if "scopus" in fname:
-        return "scopus_pop"
-    if "springer" in fname:
-        return "springer"
-    if "scholar" in fname:
-        return "scholar"
-    if "item title" in first:
-        return "springer"
-    if "source title" in first:
-        return "scopus"
-    if "scopus.com" in second:
-        return "scopus_pop"
-
+    first = content.split('\n')[0].lower()
+    second = content.split('\n')[1].lower() if len(content.split('\n')) > 1 else ""
+    if "scopus" in fname: return "scopus_pop"
+    if "springer" in fname: return "springer"
+    if "scholar" in fname: return "scholar"
+    if "item title" in first: return "springer"
+    if "source title" in first: return "scopus"
+    if "scopus.com" in second: return "scopus_pop"
     return "scholar"
 
 # ── Deduplication ─────────────────────────────────────────────────────────────
 def paper_score(p):
     s = 0
-    if p.get("abstract", "").strip():
-        s += 3
-    if p.get("doi", "").strip():
-        s += 2
-    if p.get("url", "").strip():
-        s += 1
-    if p.get("authors", "").strip():
-        s += 1
-    if p.get("keywords", "").strip():
-        s += 1
+    if p.get("abstract","").strip(): s += 3
+    if p.get("doi","").strip():      s += 2
+    if p.get("url","").strip():      s += 1
+    if p.get("authors","").strip():  s += 1
+    if p.get("keywords","").strip(): s += 1
     return s
-
 
 def deduplicate(papers):
     sorted_p = sorted(papers, key=paper_score, reverse=True)
     seen_doi, seen_title, unique, dupes = set(), set(), [], []
-
     for p in sorted_p:
-        doi = p.get("doi", "").strip().lower()
-        title = p.get("title", "").strip().lower()[:120]
-
+        doi   = p.get("doi","").strip().lower()
+        title = p.get("title","").strip().lower()[:120]
         if doi:
-            if doi in seen_doi:
-                dupes.append(p)
-                continue
+            if doi in seen_doi: dupes.append(p); continue
             seen_doi.add(doi)
         else:
-            if title and title in seen_title:
-                dupes.append(p)
-                continue
-
-        if title:
-            seen_title.add(title)
-
+            if title and title in seen_title: dupes.append(p); continue
+        if title: seen_title.add(title)
         unique.append(p)
-
     return unique, dupes
 
 # ── Language Detection ────────────────────────────────────────────────────────
-GERMAN_WORDS = [
-    'für', 'über', 'durch', 'beim', 'zur', 'zum', 'nach', 'mit', 'von', 'ist', 'sind',
-    'wird', 'werden', 'wurde', 'wurden', 'hat', 'haben', 'einer', 'eines', 'einem',
-    'einen', 'der', 'die', 'das', 'und', 'oder', 'auch', 'nicht', 'sich', 'dass', 'eine',
-    'als', 'bei', 'des', 'dem', 'im', 'an', 'auf', 'zu', 'in', 'es', 'er', 'sie', 'wir'
-]
-
-FRENCH_WORDS = [
-    'pour', 'avec', 'dans', 'sur', 'les', 'des', 'une', 'est', 'sont', 'par', 'aux',
-    'du', 'qui', 'que', 'il', 'elle', 'nous', 'vous', 'ils', 'elles', 'ce', 'cette'
-]
-
-SPANISH_WORDS = [
-    'para', 'con', 'por', 'los', 'las', 'una', 'del', 'que', 'como', 'más', 'este',
-    'esta', 'están', 'tiene', 'pueden', 'entre', 'sobre', 'hacia', 'desde'
-]
-
+GERMAN_WORDS  = ['für','über','durch','beim','zur','zum','nach','mit','von','ist','sind',
+                 'wird','werden','wurde','wurden','hat','haben','einer','eines','einem',
+                 'einen','der','die','das','und','oder','auch','nicht','sich','dass','eine',
+                 'als','bei','des','dem','im','an','auf','zu','in','es','er','sie','wir']
+FRENCH_WORDS  = ['pour','avec','dans','sur','les','des','une','est','sont','par','aux',
+                 'du','qui','que','il','elle','nous','vous','ils','elles','ce','cette']
+SPANISH_WORDS = ['para','con','por','los','las','una','del','que','como','más','este',
+                 'esta','están','tiene','pueden','entre','sobre','hacia','desde']
 
 def is_english_text(text):
-    if not text or len(text.strip()) < 10:
-        return True, ""
-
-    cjk = sum(
-        1 for c in text
-        if '\u4e00' <= c <= '\u9fff' or '\u3040' <= c <= '\u30ff'
-    )
-
-    if cjk > 3:
-        return False, "CJK characters"
-
-    special = sum(
-        1 for c in text
-        if '\u0400' <= c <= '\u04ff' or '\u0600' <= c <= '\u06ff'
-    )
-
-    if special > 3:
-        return False, "Non-Latin script"
-
-    tl = text.lower()
-    padded = f" {tl} "
-
-    def cnt(wl):
-        return sum(1 for w in wl if f" {w} " in padded or padded.startswith(f"{w} "))
-
-    if cnt(GERMAN_WORDS) >= 3:
-        return False, "German detected"
-    if cnt(FRENCH_WORDS) >= 3:
-        return False, "French detected"
-    if cnt(SPANISH_WORDS) >= 3:
-        return False, "Spanish detected"
-
+    if not text or len(text.strip()) < 10: return True, ""
+    cjk = sum(1 for c in text if '\u4e00' <= c <= '\u9fff' or '\u3040' <= c <= '\u30ff')
+    if cjk > 3: return False, "CJK characters"
+    special = sum(1 for c in text if '\u0400' <= c <= '\u04ff' or '\u0600' <= c <= '\u06ff')
+    if special > 3: return False, "Non-Latin script"
+    tl = text.lower(); padded = f" {tl} "
+    def cnt(wl): return sum(1 for w in wl if f" {w} " in padded or padded.startswith(f"{w} "))
+    if cnt(GERMAN_WORDS)  >= 3: return False, "German detected"
+    if cnt(FRENCH_WORDS)  >= 3: return False, "French detected"
+    if cnt(SPANISH_WORDS) >= 3: return False, "Spanish detected"
     return True, ""
-
 
 def is_valid_year(y):
     return str(y).strip().isdigit() and 2015 <= int(str(y).strip()) <= 2026
@@ -609,119 +201,61 @@ def is_valid_year(y):
 # ── HTTP + Rate Limiter ───────────────────────────────────────────────────────
 import requests as _req
 from bs4 import BeautifulSoup
-import urllib3
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 _lock = threading.Lock()
 _req_times = []
 
-
 def _rate_limit():
     with _lock:
         now = time.time()
-        _req_times[:] = [t for t in _req_times if now - t < 1.0]
-
+        _req_times[:] = [t for t in _req_times if now-t < 1.0]
         if len(_req_times) >= 3:
             s = 1.0 - (now - _req_times[0])
-            if s > 0:
-                time.sleep(s)
-
+            if s > 0: time.sleep(s)
         _req_times.append(time.time())
-
 
 def _fetch_url(url, timeout=12):
     try:
         _rate_limit()
-        r = _req.get(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 Chrome/120"},
-            timeout=timeout,
-            allow_redirects=True,
-            verify=False
-        )
+        r = _req.get(url, headers={"User-Agent":"Mozilla/5.0 Chrome/120"},
+                     timeout=timeout, allow_redirects=True, verify=False)
         return r if r.status_code == 200 else None
-    except Exception:
-        return None
-
+    except: return None
 
 def _is_english_abstract(text):
-    if not text or len(text) < 10:
-        return True
+    if not text or len(text) < 10: return True
     return (sum(1 for c in text if ord(c) > 127) / len(text)) < 0.3
 
-
 def _clean(text):
-    if not text:
-        return ""
-
+    if not text: return ""
     text = re.sub(r'<[^>]+>', ' ', text)
     text = re.sub(r'\s+', ' ', text).strip()
-    text = re.sub(
-        r'^(Abstract|ABSTRACT|Summary|SUMMARY)\s*[:\-]?\s*',
-        '',
-        text,
-        flags=re.I
-    )
+    text = re.sub(r'^(Abstract|ABSTRACT|Summary|SUMMARY)\s*[:\-]?\s*', '', text, flags=re.I)
     return text
 
-
 def _norm_doi(doi):
-    if not doi:
-        return ""
-
+    if not doi: return ""
     doi = doi.strip()
-    doi = re.sub(
-        r'/(abstract|full|pdf|reference|v\d+|fulltext|advance-article-abstract|article-abstract|article-pdf)$',
-        '',
-        doi,
-        flags=re.I
-    )
-    doi = re.sub(r'\.(short|abstract)$', '', doi, flags=re.I)
-    doi = re.sub(r'^https?://(dx\.)?doi\.org/', '', doi, flags=re.I)
-    doi = re.sub(r'^doi:', '', doi, flags=re.I)
+    doi = re.sub(r'/(abstract|full|pdf|reference|v\d+|fulltext|advance-article-abstract|article-abstract|article-pdf)$','',doi,flags=re.I)
+    doi = re.sub(r'\.(short|abstract)$','',doi,flags=re.I)
+    doi = re.sub(r'^https?://(dx\.)?doi\.org/','',doi,flags=re.I)
+    doi = re.sub(r'^doi:','',doi,flags=re.I)
     return doi.rstrip('/')
 
-
 def _title_match(t1, t2, thresh=0.5):
-    if not t1 or not t2:
-        return True
-
-    w1 = set(re.sub(r'[^\w\s]', '', t1.lower()).split())
-    w2 = set(re.sub(r'[^\w\s]', '', t2.lower()).split())
-
-    if not w1 or not w2:
-        return True
-
-    return len(w1 & w2) / min(len(w1), len(w2)) >= thresh
-
+    if not t1 or not t2: return True
+    w1 = set(re.sub(r'[^\w\s]','',t1.lower()).split())
+    w2 = set(re.sub(r'[^\w\s]','',t2.lower()).split())
+    if not w1 or not w2: return True
+    return len(w1 & w2) / min(len(w1),len(w2)) >= thresh
 
 def _is_pdf(url):
-    if not url:
-        return False
-
-    return any(x in url.lower() for x in [
-        '.pdf',
-        '/pdf/',
-        '/article-pdf/',
-        '/content/pdf/',
-        '/doi/pdf/',
-        '/bitstream/handle/'
-    ])
-
+    if not url: return False
+    return any(x in url.lower() for x in ['.pdf','/pdf/','/article-pdf/','/content/pdf/','/doi/pdf/','/bitstream/handle/'])
 
 def _is_blocked(url):
-    if not url:
-        return False
-
-    return any(b in url.lower() for b in [
-        'researchgate.net',
-        'ebscohost.com',
-        'books.google',
-        'sciengine.com',
-        'pubpub.org'
-    ])
-
+    if not url: return False
+    return any(b in url.lower() for b in ['researchgate.net','ebscohost.com','books.google','sciengine.com','pubpub.org'])
 
 def _is_scopus_inward(url):
     return bool(url) and 'scopus.com/inward' in url.lower()
@@ -729,537 +263,227 @@ def _is_scopus_inward(url):
 # ── Year Recovery ─────────────────────────────────────────────────────────────
 def _extract_year_from_dateparts(dp):
     try:
-        if dp and isinstance(dp, list) and dp[0]:
-            return str(dp[0][0])
-    except Exception:
-        pass
-
+        if dp and isinstance(dp, list) and dp[0]: return str(dp[0][0])
+    except: pass
     return ""
-
 
 def fetch_year_from_semantic_scholar(doi):
-    if not doi:
-        return ""
-
+    if not doi: return ""
     try:
         _rate_limit()
-        r = _req.get(
-            f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}",
-            params={"fields": "year"},
-            timeout=8
-        )
-
+        r = _req.get(f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}",
+                     params={"fields":"year"}, timeout=8)
         if r.ok:
             year = r.json().get("year")
-            if year:
-                return str(year)
-    except Exception:
-        pass
-
+            if year: return str(year)
+    except: pass
     return ""
-
 
 def fetch_year_from_crossref(doi):
-    if not doi:
-        return ""
-
+    if not doi: return ""
     try:
         _rate_limit()
-        r = _req.get(
-            f"https://api.crossref.org/works/{doi}",
-            headers={"User-Agent": "SystematicReview/1.0"},
-            timeout=8
-        )
-
+        r = _req.get(f"https://api.crossref.org/works/{doi}",
+                     headers={"User-Agent":"SystematicReview/1.0"}, timeout=8)
         if r.ok:
             msg = r.json().get("message", {})
-            for field in ["published", "published-print", "published-online", "issued", "created"]:
+            for field in ["published","published-print","published-online","issued","created"]:
                 dp = msg.get(field, {}).get("date-parts")
                 year = _extract_year_from_dateparts(dp)
-
-                if year and year.isdigit() and 1990 <= int(year) <= 2030:
-                    return year
-
-    except Exception:
-        pass
-
+                if year and year.isdigit() and 1990 <= int(year) <= 2030: return year
+    except: pass
     return ""
-
 
 def recover_year(paper):
-    doi = _norm_doi(paper.get("doi", ""))
-
+    doi = _norm_doi(paper.get("doi",""))
     if doi:
         year = fetch_year_from_semantic_scholar(doi)
-        if year:
-            return year
-
+        if year: return year
         year = fetch_year_from_crossref(doi)
-        if year:
-            return year
-
+        if year: return year
     return ""
 
-# ── Authors + Keywords Helpers ────────────────────────────────────────────────
-def _format_crossref_authors(author_list):
-    names = []
-
-    for a in author_list or []:
-        given = a.get("given", "").strip()
-        family = a.get("family", "").strip()
-        name = " ".join(x for x in [given, family] if x)
-
-        if name:
-            names.append(name)
-
-    return ", ".join(names)
-
-
-def _format_semantic_authors(author_list):
-    names = []
-
-    for a in author_list or []:
-        name = a.get("name", "").strip()
-        if name:
-            names.append(name)
-
-    return ", ".join(names)
-
-
-def _format_openalex_authors(authorships):
-    names = []
-
-    for item in authorships or []:
-        author = item.get("author", {})
-        name = author.get("display_name", "").strip()
-
-        if name:
-            names.append(name)
-
-    return ", ".join(names)
-
-
-def _author_count(authors):
-    if not authors:
-        return 0
-    if " et al" in authors.lower():
-        return 1
-    parts = re.split(r"\s*;\s*|\s+\band\b\s+|\s*,\s*(?=[A-Z])", authors)
-    return len([p for p in parts if p.strip()])
-
-
-def scrape_html_keywords_authors(html):
-    """
-    Extract keywords and authors from publisher HTML.
-    Works for many pages using citation_* and Dublin Core meta tags.
-    """
-    if not html:
-        return "", ""
-
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-
-        keyword_values = []
-
-        keyword_selectors = [
-            "meta[name='citation_keywords']",
-            "meta[name='keywords']",
-            "meta[name='dc.subject']",
-            "meta[name='DC.Subject']",
-            "meta[property='article:tag']",
-        ]
-
-        for sel in keyword_selectors:
-            for el in soup.select(sel):
-                content = el.get("content", "").strip()
-                if content:
-                    keyword_values.append(content)
-
-        keywords = "; ".join(keyword_values)
-        keywords = re.sub(r"\s*[,|]\s*", "; ", keywords)
-        keywords = re.sub(r"\s*;\s*", "; ", keywords).strip(" ;")
-
-        author_values = []
-
-        author_selectors = [
-            "meta[name='citation_author']",
-            "meta[name='dc.creator']",
-            "meta[name='DC.Creator']",
-            "meta[property='article:author']",
-        ]
-
-        for sel in author_selectors:
-            for el in soup.select(sel):
-                content = el.get("content", "").strip()
-                if content:
-                    author_values.append(content)
-
-        authors = "; ".join(author_values)
-
-        return keywords, authors
-
-    except Exception:
-        return "", ""
-
-# ── Abstract + Keywords + Authors Fetching ────────────────────────────────────
-def fetch_crossref_data(doi, paper_title=""):
-    """
-    Returns: abstract, keywords, authors
-    CrossRef can provide abstract, subject keywords, and full authors.
-    """
-    if not doi:
-        return "", "", ""
-
+# ── Abstract + Keywords Fetching ──────────────────────────────────────────────
+def fetch_crossref_abstract(doi, paper_title=""):
+    if not doi: return "", ""
     try:
         _rate_limit()
-        r = _req.get(
-            f"https://api.crossref.org/works/{doi}",
-            headers={"User-Agent": "SystematicReview/1.0"},
-            timeout=10
-        )
-
+        r = _req.get(f"https://api.crossref.org/works/{doi}",
+                     headers={"User-Agent":"SystematicReview/1.0"}, timeout=10)
         if r.ok:
             msg = r.json().get("message", {})
-
+            abstract = msg.get("abstract","")
+            # Title verification
             cr_title = (msg.get("title") or [""])[0]
-
             if paper_title and cr_title and not _title_match(paper_title, cr_title):
-                return "", "", ""
-
-            abstract = _clean(msg.get("abstract", ""))
-
-            subjects = msg.get("subject") or []
-            keywords = "; ".join(subjects)
-
-            authors = _format_crossref_authors(msg.get("author"))
-
-            if abstract and (len(abstract) < 50 or not _is_english_abstract(abstract)):
-                abstract = ""
-
-            return abstract, keywords, authors
-
-    except Exception:
-        pass
-
-    return "", "", ""
-
+                return "", ""
+            if abstract:
+                abstract = _clean(abstract)
+                if len(abstract) > 50 and _is_english_abstract(abstract):
+                    return abstract, ""
+    except: pass
+    return "", ""
 
 def fetch_semantic_scholar_data(doi):
-    """
-    Returns: abstract, keywords, authors
-    """
-    if not doi:
-        return "", "", ""
-
-    urls = [
-        f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}",
-        f"https://api.semanticscholar.org/graph/v1/paper/{doi}",
-    ]
-
-    for url in urls:
+    """Returns (abstract, keywords) from Semantic Scholar"""
+    if not doi: return "", ""
+    for url in [f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}",
+                f"https://api.semanticscholar.org/graph/v1/paper/{doi}"]:
         try:
             _rate_limit()
-            r = _req.get(
-                url,
-                params={"fields": "abstract,tldr,fieldsOfStudy,authors"},
-                timeout=10
-            )
-
+            r = _req.get(url, params={"fields":"abstract,tldr,fieldsOfStudy"}, timeout=10)
             if r.ok:
                 data = r.json()
-
                 abstract = data.get("abstract") or ""
                 fields = data.get("fieldsOfStudy") or []
-                keywords = "; ".join(fields) if fields else ""
-                authors = _format_semantic_authors(data.get("authors"))
-
+                kw = "; ".join(fields) if fields else ""
                 if abstract and len(abstract) > 50 and _is_english_abstract(abstract):
-                    return abstract, keywords, authors
-
-                return "", keywords, authors
-
-        except Exception:
-            pass
-
-    return "", "", ""
-
+                    return abstract, kw
+                elif kw:
+                    return "", kw
+        except: pass
+    return "", ""
 
 def fetch_openalex_data(doi):
-    """
-    Returns: abstract, keywords, authors
-    """
-    if not doi:
-        return "", "", ""
-
+    """Returns (abstract, keywords) from OpenAlex"""
+    if not doi: return "", ""
     try:
         _rate_limit()
         r = _req.get(f"https://api.openalex.org/works/doi:{doi}", timeout=10)
-
         if r.ok:
             data = r.json()
-
-            abstract = data.get("abstract", "")
-
+            abstract = data.get("abstract","")
             if not abstract:
                 inv = data.get("abstract_inverted_index")
                 if inv:
                     words = []
                     for word, positions in inv.items():
                         for pos in positions:
-                            while len(words) <= pos:
-                                words.append("")
+                            while len(words) <= pos: words.append("")
                             words[pos] = word
                     abstract = " ".join(words)
-
+            # Keywords from concepts
             concepts = data.get("concepts") or []
-            keywords = "; ".join(
-                c.get("display_name", "")
-                for c in concepts[:10]
-                if c.get("display_name")
-            )
-
-            authors = _format_openalex_authors(data.get("authorships"))
-
-            if not abstract or len(abstract) <= 50 or not _is_english_abstract(abstract):
-                abstract = ""
-
-            return abstract, keywords, authors
-
-    except Exception:
-        pass
-
-    return "", "", ""
-
+            kw = "; ".join(c.get("display_name","") for c in concepts[:10] if c.get("display_name"))
+            ab_ok = abstract and len(abstract) > 50 and _is_english_abstract(abstract)
+            return (abstract if ab_ok else ""), kw
+    except: pass
+    return "", ""
 
 def fetch_europepmc_abstract(doi):
-    if not doi:
-        return ""
-
+    if not doi: return ""
     try:
         _rate_limit()
-        r = _req.get(
-            "https://www.ebi.ac.uk/europepmc/webservices/rest/search",
-            params={
-                "query": f"DOI:{doi}",
-                "format": "json",
-                "resultType": "core"
-            },
-            timeout=10
-        )
-
+        r = _req.get("https://www.ebi.ac.uk/europepmc/webservices/rest/search",
+                     params={"query":f"DOI:{doi}","format":"json","resultType":"core"}, timeout=10)
         if r.ok:
-            results = r.json().get("resultList", {}).get("result", [])
-
+            results = r.json().get("resultList",{}).get("result",[])
             if results:
-                abstract = results[0].get("abstractText", "")
-
-                if abstract and len(abstract) > 50 and _is_english_abstract(abstract):
-                    return abstract
-
-    except Exception:
-        pass
-
+                abstract = results[0].get("abstractText","")
+                if abstract and len(abstract) > 50 and _is_english_abstract(abstract): return abstract
+    except: pass
     return ""
 
-
 def scrape_html_abstract(html):
-    if not html:
-        return ""
-
+    if not html: return ""
     try:
-        soup = BeautifulSoup(html, "html.parser")
-
-        for tag in soup(["script", "style", "nav", "header", "footer"]):
-            tag.decompose()
-
+        soup = BeautifulSoup(html,"html.parser")
+        for tag in soup(["script","style","nav","header","footer"]): tag.decompose()
         selectors = [
-            "div.abstract",
-            "section.abstract",
-            "div#abstract",
-            "div.abstractSection",
-            "p.abstract",
-            "#Abs1-content",
-            "div[class*='abstract']",
-            "section[class*='abstract']",
-            "section[data-title='Abstract']",
-            "div.c-article-section__content",
-            "div.Abstract",
-            "div#Abs1",
-            "div.abstract-text",
-            "div.abstract-body",
-            "div.article-section__content",
-            "div.NLM_sec",
-            "div.abstract-content",
-            "blockquote.abstract",
-            "meta[name='description']",
-            "meta[property='og:description']",
-            "meta[name='citation_abstract']",
-            "meta[name='DC.Description']",
+            "div.abstract","section.abstract","div#abstract","div.abstractSection",
+            "p.abstract","#Abs1-content","div[class*='abstract']","section[class*='abstract']",
+            "section[data-title='Abstract']","div.c-article-section__content",
+            "div.Abstract","div#Abs1","div.abstract-text","div.abstract-body",
+            "div.article-section__content","div.NLM_sec","div.abstract-content",
+            "blockquote.abstract","meta[name='description']","meta[property='og:description']",
+            "meta[name='citation_abstract']","meta[name='DC.Description']",
         ]
-
         for sel in selectors:
             try:
                 el = soup.select_one(sel)
-
                 if el:
-                    text = el.get("content", "") if el.name == "meta" else el.get_text(" ", strip=True)
+                    text = el.get("content","") if el.name=="meta" else el.get_text(" ",strip=True)
                     text = _clean(text)
-
-                    if len(text) > 80 and _is_english_abstract(text) and len(text) < 5000:
-                        return text
-            except Exception:
-                continue
-
-        for h in soup.find_all(['h1', 'h2', 'h3', 'h4', 'strong', 'b']):
+                    if len(text) > 80 and _is_english_abstract(text) and len(text) < 5000: return text
+            except: continue
+        for h in soup.find_all(['h1','h2','h3','h4','strong','b']):
             if 'abstract' in h.get_text(strip=True).lower():
-                nxt = h.find_next(['p', 'div'])
-
+                nxt = h.find_next(['p','div'])
                 if nxt:
-                    text = _clean(nxt.get_text(" ", strip=True))
-
-                    if len(text) > 80 and _is_english_abstract(text) and len(text) < 5000:
-                        return text
-
+                    text = _clean(nxt.get_text(" ",strip=True))
+                    if len(text) > 80 and _is_english_abstract(text) and len(text) < 5000: return text
         best = ""
-        academic = [
-            'study', 'research', 'method', 'results', 'analysis',
-            'data', 'model', 'system', 'proposed', 'approach'
-        ]
-
+        academic = ['study','research','method','results','analysis','data','model','system','proposed','approach']
         for p in soup.find_all('p'):
-            text = p.get_text(" ", strip=True)
-
+            text = p.get_text(" ",strip=True)
             if len(text) > len(best) and 100 < len(text) < 3000:
-                if any(w in text.lower() for w in academic):
-                    best = text
-
-        if best:
-            return _clean(best)
-
-    except Exception:
-        pass
-
+                if any(w in text.lower() for w in academic): best = text
+        if best: return _clean(best)
+    except: pass
     return ""
 
+def fetch_abstract_and_keywords_for_paper(paper):
+    """Returns (abstract, keywords). Fills both where possible."""
+    doi   = _norm_doi(paper.get("doi",""))
+    url   = paper.get("url","").strip()
+    title = paper.get("title","")
+    existing_kw = paper.get("keywords","").strip()
 
-def fetch_abstract_keywords_authors_for_paper(paper):
-    """
-    Returns: abstract, keywords, authors
-
-    Priority:
-    1. Existing CSV/BIB values
-    2. CrossRef
-    3. Semantic Scholar
-    4. OpenAlex
-    5. EuropePMC
-    6. Publisher HTML scrape
-    """
-    doi = _norm_doi(paper.get("doi", ""))
-    url = paper.get("url", "").strip()
-    title = paper.get("title", "")
-
-    abstract = paper.get("abstract", "").strip()
-    keywords = paper.get("keywords", "").strip()
-    authors = _normalize_authors_commas(paper.get("authors", "").strip())
-
-    # For PDF uploads, keywords must come ONLY from the paper's official keyword heading.
-    # Do not fill PDF keywords from CrossRef subjects, Semantic Scholar fields, OpenAlex concepts, or HTML meta tags.
-    is_pdf_upload = paper.get("database", "") == "PDF"
+    abstract = ""
+    keywords = existing_kw  # start with what we already have from CSV/BIB
 
     if doi:
-        # CrossRef
-        if not abstract or not keywords or not authors:
-            ab1, kw1, au1 = fetch_crossref_data(doi, title)
+        # CrossRef — abstract only
+        ab, _ = fetch_crossref_abstract(doi, title)
+        if ab: abstract = ab
 
-            if not abstract and ab1:
-                abstract = ab1
-            if not is_pdf_upload and not keywords and kw1:
-                keywords = kw1
-            if au1 and _author_count(au1) > _author_count(authors):
-                authors = au1
+        # Semantic Scholar — abstract + fields of study as keywords
+        if not abstract or not keywords:
+            ab2, kw2 = fetch_semantic_scholar_data(doi)
+            if not abstract and ab2: abstract = ab2
+            if not keywords and kw2: keywords = kw2
 
-        # Semantic Scholar
-        if not abstract or not keywords or not authors:
-            ab2, kw2, au2 = fetch_semantic_scholar_data(doi)
+        # OpenAlex — abstract + concepts as keywords
+        if not abstract or not keywords:
+            ab3, kw3 = fetch_openalex_data(doi)
+            if not abstract and ab3: abstract = ab3
+            if not keywords and kw3: keywords = kw3
 
-            if not abstract and ab2:
-                abstract = ab2
-            if not is_pdf_upload and not keywords and kw2:
-                keywords = kw2
-            if au2 and _author_count(au2) > _author_count(authors):
-                authors = au2
-
-        # OpenAlex
-        if not abstract or not keywords or not authors:
-            ab3, kw3, au3 = fetch_openalex_data(doi)
-
-            if not abstract and ab3:
-                abstract = ab3
-            if not is_pdf_upload and not keywords and kw3:
-                keywords = kw3
-            if au3 and _author_count(au3) > _author_count(authors):
-                authors = au3
-
-        # EuropePMC abstract only
+        # EuropePMC — abstract only
         if not abstract:
             abstract = fetch_europepmc_abstract(doi)
 
-        # DOI landing page scrape
-        if not abstract or not keywords or not authors:
+        # doi.org URL scrape
+        if not abstract:
             doi_url = f"https://doi.org/{doi}"
             r = _fetch_url(doi_url)
-
-            if r and "pdf" not in r.headers.get("Content-Type", "").lower():
-                if not abstract:
-                    abstract = scrape_html_abstract(r.text)
-
-                html_kw, html_authors = scrape_html_keywords_authors(r.text)
-
-                if not is_pdf_upload and not keywords and html_kw:
-                    keywords = html_kw
-                if html_authors and _author_count(html_authors) > _author_count(authors):
-                    authors = html_authors
+            if r and 'pdf' not in r.headers.get('Content-Type','').lower():
+                abstract = scrape_html_abstract(r.text)
 
     # Original URL scrape
-    if url and not _is_pdf(url) and not _is_blocked(url) and not _is_scopus_inward(url):
-        if not abstract or not keywords or not authors:
+    if not abstract and url and not _is_pdf(url) and not _is_blocked(url) and not _is_scopus_inward(url):
+        if not doi or url != f"https://doi.org/{doi}":
             r = _fetch_url(url)
+            if r and 'pdf' not in r.headers.get('Content-Type','').lower():
+                abstract = scrape_html_abstract(r.text)
 
-            if r and "pdf" not in r.headers.get("Content-Type", "").lower():
-                if not abstract:
-                    abstract = scrape_html_abstract(r.text)
-
-                html_kw, html_authors = scrape_html_keywords_authors(r.text)
-
-                if not is_pdf_upload and not keywords and html_kw:
-                    keywords = html_kw
-                if html_authors and _author_count(html_authors) > _author_count(authors):
-                    authors = html_authors
-
-    return abstract, keywords, authors
+    return abstract, keywords
 
 # ── Auto-Screening ────────────────────────────────────────────────────────────
 def auto_screen(papers):
     counts = {"E1": 0, "E2": 0, "E7": 0, "E1_recovered": 0}
-
     for p in papers:
-        year = str(p.get("year", "")).strip()
-        doi = _norm_doi(p.get("doi", ""))
+        year = str(p.get("year","")).strip()
+        doi  = _norm_doi(p.get("doi",""))
 
         if year and year.isdigit() and not is_valid_year(year):
-            p.update(
-                screening_status="Exclude",
-                exclusion_reason="E1",
-                notes=f"Auto: year {year} outside 2015-2026",
-                auto_excluded=True
-            )
-            counts["E1"] += 1
-            continue
+            p.update(screening_status="Exclude", exclusion_reason="E1",
+                     notes=f"Auto: year {year} outside 2015-2026", auto_excluded=True)
+            counts["E1"] += 1; continue
 
         if not year or not year.isdigit():
             if doi:
                 recovered = recover_year(p)
-
                 if recovered and recovered.isdigit() and is_valid_year(recovered):
                     p["year"] = recovered
                     p["notes"] = f"Year recovered from API: {recovered}"
@@ -1271,55 +495,32 @@ def auto_screen(papers):
                 p["notes"] = "Year missing, no DOI — check manually"
                 continue
 
-        text = p.get("title", "") + " " + p.get("source", "")
+        text = p.get("title","") + " " + p.get("source","")
         is_eng, reason = is_english_text(text)
-
         if not is_eng:
-            p.update(
-                screening_status="Exclude",
-                exclusion_reason="E2",
-                notes=f"Auto: not English — {reason}",
-                auto_excluded=True
-            )
-            counts["E2"] += 1
-            continue
+            p.update(screening_status="Exclude", exclusion_reason="E2",
+                     notes=f"Auto: not English — {reason}", auto_excluded=True)
+            counts["E2"] += 1; continue
 
-        if not p.get("title", "").strip() or not p.get("authors", "").strip():
-            p.update(
-                screening_status="Exclude",
-                exclusion_reason="E7",
-                notes="Auto: missing title or authors",
-                auto_excluded=True
-            )
+        if not p.get("title","").strip() or not p.get("authors","").strip():
+            p.update(screening_status="Exclude", exclusion_reason="E7",
+                     notes="Auto: missing title or authors", auto_excluded=True)
             counts["E7"] += 1
 
     return papers, counts
 
-
 def post_fetch_language_check(papers):
     flagged = 0
-
     for p in papers:
-        if p.get("auto_excluded"):
-            continue
-
-        abstract = p.get("abstract", "")
-
-        if not abstract:
-            continue
-
-        text = p.get("title", "") + " " + abstract
+        if p.get("auto_excluded"): continue
+        abstract = p.get("abstract","")
+        if not abstract: continue
+        text = p.get("title","") + " " + abstract
         is_eng, reason = is_english_text(text)
-
         if not is_eng:
-            p.update(
-                screening_status="Exclude",
-                exclusion_reason="E2",
-                notes=f"Post-fetch: abstract not English — {reason}",
-                auto_excluded=True
-            )
+            p.update(screening_status="Exclude", exclusion_reason="E2",
+                     notes=f"Post-fetch: abstract not English — {reason}", auto_excluded=True)
             flagged += 1
-
     return papers, flagged
 
 # ── Excel Builder ─────────────────────────────────────────────────────────────
@@ -1329,320 +530,205 @@ def build_dimension_excel(papers, dupe_list, dim_code, dim_name):
     from openpyxl.utils import get_column_letter
     from openpyxl.worksheet.datavalidation import DataValidation
 
-    H_FILL = PatternFill("solid", start_color="1F4E79")
-    H_FONT = Font(bold=True, color="FFFFFF", name="Arial", size=10)
+    H_FILL    = PatternFill("solid", start_color="1F4E79")
+    H_FONT    = Font(bold=True, color="FFFFFF", name="Arial", size=10)
     AUTO_FILL = PatternFill("solid", start_color="E8F5E9")
-    THIN = Side(style="thin", color="BFBFBF")
-    BDR = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
-    PH_CLR = {
-        "Identification": "D6E4F0",
-        "Screening": "D5E8D4",
-        "Eligibility": "FFF2CC",
-        "Included": "FCE4D6"
-    }
+    THIN      = Side(style="thin", color="BFBFBF")
+    BDR       = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+    PH_CLR    = {"Identification":"D6E4F0","Screening":"D5E8D4","Eligibility":"FFF2CC","Included":"FCE4D6"}
 
-    dim_papers = [p for p in papers if dim_code in p.get("dimension", "")]
-    dim_dupes = [p for p in dupe_list if dim_code in p.get("dimension", "")]
+    dim_papers = [p for p in papers if dim_code in p.get("dimension","")]
+    dim_dupes  = [p for p in dupe_list if dim_code in p.get("dimension","")]
+    if not dim_papers: return None
 
-    if not dim_papers:
-        return None
-
-    auto_e1 = sum(1 for p in dim_papers if p.get("exclusion_reason") == "E1")
-    auto_e2 = sum(1 for p in dim_papers if p.get("exclusion_reason") == "E2")
-    auto_e7 = sum(1 for p in dim_papers if p.get("exclusion_reason") == "E7")
-    pending = [p for p in dim_papers if p.get("screening_status") == "Pending"]
+    auto_e1 = sum(1 for p in dim_papers if p.get("exclusion_reason")=="E1")
+    auto_e2 = sum(1 for p in dim_papers if p.get("exclusion_reason")=="E2")
+    auto_e7 = sum(1 for p in dim_papers if p.get("exclusion_reason")=="E7")
+    pending = [p for p in dim_papers if p.get("screening_status")=="Pending"]
 
     wb = openpyxl.Workbook()
 
+    # ── Column definitions — now includes Authors (full) + Keywords ──
     COLS = [
-        ("Database", 14),
-        ("Title", 50),
-        ("Authors", 50),
-        ("Year", 6),
-        ("Source / Journal", 26),
-        ("DOI", 28),
-        ("URL", 28),
-        ("Keywords", 45),
-        ("Abstract", 60),
-        ("Screening Status", 14),
-        ("Exclusion Reason", 20),
-        ("Notes", 30),
+        ("Database",       14),
+        ("Title",          50),
+        ("Authors",        40),   # full, no truncation
+        ("Year",            6),
+        ("Source / Journal",26),
+        ("DOI",            28),
+        ("URL",            28),
+        ("Keywords",       35),   # NEW
+        ("Abstract",       60),
+        ("Screening Status",14),
+        ("Exclusion Reason",20),
+        ("Notes",          30),
     ]
 
     def write_screen(ws, plist, rfn=None, start=1):
-        ws.freeze_panes = f"A{start + 1}"
-
-        for ci, (name, w) in enumerate(COLS, 1):
-            c = ws.cell(row=start, column=ci, value=name)
-            c.font = H_FONT
-            c.fill = H_FILL
-            c.border = BDR
-            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            ws.column_dimensions[get_column_letter(ci)].width = w
-
-        ws.row_dimensions[start].height = 32
-
-        for ri, p in enumerate(plist, start + 1):
-            fill = rfn(p) if rfn else (
-                AUTO_FILL if p.get("auto_excluded") else PatternFill("solid", start_color="FFFFFF")
-            )
-
-            vals = [
-                p.get("database", ""),
-                p.get("title", ""),
-                p.get("authors", ""),
-                p.get("year", ""),
-                p.get("source", "")[:60],
-                p.get("doi", ""),
-                p.get("url", "")[:100],
-                p.get("keywords", ""),
-                p.get("abstract", ""),
-                p.get("screening_status", "Pending"),
-                p.get("exclusion_reason", ""),
-                p.get("notes", ""),
+        ws.freeze_panes = f"A{start+1}"
+        for ci,(name,w) in enumerate(COLS,1):
+            c = ws.cell(row=start,column=ci,value=name)
+            c.font=H_FONT; c.fill=H_FILL; c.border=BDR
+            c.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True)
+            ws.column_dimensions[get_column_letter(ci)].width=w
+        ws.row_dimensions[start].height=32
+        for ri,p in enumerate(plist,start+1):
+            fill = rfn(p) if rfn else (AUTO_FILL if p.get("auto_excluded") else PatternFill("solid",start_color="FFFFFF"))
+            vals=[
+                p.get("database",""),
+                p.get("title",""),
+                p.get("authors",""),        # full authors — no truncation
+                p.get("year",""),
+                p.get("source","")[:60],
+                p.get("doi",""),
+                p.get("url","")[:100],
+                p.get("keywords",""),       # keywords column
+                p.get("abstract",""),
+                p.get("screening_status","Pending"),
+                p.get("exclusion_reason",""),
+                p.get("notes",""),
             ]
-
-            for ci, val in enumerate(vals, 1):
-                c = ws.cell(row=ri, column=ci, value=val)
-                c.fill = fill
-                c.border = BDR
-                c.font = Font(name="Arial", size=9)
-                c.alignment = Alignment(wrap_text=True, vertical="top")
-
-        ws.auto_filter.ref = f"A{start}:{get_column_letter(len(COLS))}{start + len(plist)}"
-
+            for ci,val in enumerate(vals,1):
+                c=ws.cell(row=ri,column=ci,value=val)
+                c.fill=fill; c.border=BDR; c.font=Font(name="Arial",size=9)
+                c.alignment=Alignment(wrap_text=True,vertical="top")
+        ws.auto_filter.ref=f"A{start}:{get_column_letter(len(COLS))}{start+len(plist)}"
         if plist:
-            dv1 = DataValidation(
-                type="list",
-                formula1='"Pending,Include,Exclude"',
-                allow_blank=True
-            )
-            ws.add_data_validation(dv1)
-            dv1.add(f'J{start + 1}:J{start + len(plist)}')
-
-            dv2 = DataValidation(
-                type="list",
-                formula1='"E1,E2,E3,E4,E5,E6,E7,E8,E9,"',
-                allow_blank=True
-            )
-            ws.add_data_validation(dv2)
-            dv2.add(f'K{start + 1}:K{start + len(plist)}')
+            dv1=DataValidation(type="list",formula1='"Pending,Include,Exclude"',allow_blank=True)
+            ws.add_data_validation(dv1); dv1.add(f'J{start+1}:J{start+len(plist)}')
+            dv2=DataValidation(type="list",formula1='"E1,E2,E3,E4,E5,E6,E7,E8,E9,"',allow_blank=True)
+            ws.add_data_validation(dv2); dv2.add(f'K{start+1}:K{start+len(plist)}')
 
     # Sheet 1: PRISMA
-    ws = wb.active
-    ws.title = "PRISMA_Flow"
-    ws.sheet_view.showGridLines = False
-    ws.column_dimensions["A"].width = 3
-
-    ws["B2"].value = f"PRISMA 2020 Flow Tracker — {dim_name}"
-    ws["B2"].font = Font(bold=True, size=14, color="1F4E79", name="Arial")
+    ws=wb.active; ws.title="PRISMA_Flow"; ws.sheet_view.showGridLines=False
+    ws.column_dimensions["A"].width=3
+    ws["B2"].value=f"PRISMA 2020 Flow Tracker — {dim_name}"
+    ws["B2"].font=Font(bold=True,size=14,color="1F4E79",name="Arial")
     ws.merge_cells("B2:H2")
-
-    hdrs = ["Phase", "Step", "Database", "Query ID", "n (raw)", "n (after filter)", "Notes"]
-    wids = [18, 42, 18, 12, 12, 16, 50]
-
-    for ci, (h, w) in enumerate(zip(hdrs, wids), 2):
-        c = ws.cell(row=4, column=ci, value=h)
-        c.font = H_FONT
-        c.fill = H_FILL
-        c.border = BDR
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        ws.column_dimensions[get_column_letter(ci)].width = w
-
-    ws.row_dimensions[4].height = 28
-
-    rows = [
-        ["Identification", f"Records identified: {dim_name}", "All", "ALL", len(dim_papers) + len(dim_dupes), "", ""],
-        ["Identification", "Duplicate records removed", "All", "ALL", len(dim_dupes), "", ""],
-        ["Identification", "Records after deduplication", "All", "ALL", len(dim_papers), "", ""],
-        ["Screening", "Auto-excluded: E1 (invalid year)", "All", "ALL", auto_e1, "", "Auto-detected"],
-        ["Screening", "Auto-excluded: E2 (not English)", "All", "ALL", auto_e2, "", "Auto-detected (pre + post-fetch)"],
-        ["Screening", "Auto-excluded: E7 (insufficient detail)", "All", "ALL", auto_e7, "", "Auto-detected"],
-        ["Screening", "Pending manual screening", "All", "ALL", len(pending), "", "See Screening_Sheet"],
-        ["Screening", "Records excluded — title screen", "All", "ALL", "", "", "Fill after manual"],
-        ["Screening", "Records excluded — abstract screen", "All", "ALL", "", "", "Fill after manual"],
-        ["Screening", "Reports sought for retrieval", "All", "ALL", "", "", ""],
-        ["Screening", "Reports not retrieved", "All", "ALL", "", "", ""],
-        ["Eligibility", "Reports assessed for eligibility", "All", "ALL", "", "", ""],
-        ["Eligibility", "Reports excluded with reasons", "All", "ALL", "", "", "E1-E9"],
-        ["Included", "Studies included in final review", "All", "ALL", "", "", "Fill after screening"],
+    hdrs=["Phase","Step","Database","Query ID","n (raw)","n (after filter)","Notes"]
+    wids=[18,42,18,12,12,16,50]
+    for ci,(h,w) in enumerate(zip(hdrs,wids),2):
+        c=ws.cell(row=4,column=ci,value=h); c.font=H_FONT; c.fill=H_FILL; c.border=BDR
+        c.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True)
+        ws.column_dimensions[get_column_letter(ci)].width=w
+    ws.row_dimensions[4].height=28
+    rows=[
+        ["Identification",f"Records identified: {dim_name}","All","ALL",len(dim_papers)+len(dim_dupes),"",""],
+        ["Identification","Duplicate records removed","All","ALL",len(dim_dupes),"",""],
+        ["Identification","Records after deduplication","All","ALL",len(dim_papers),"",""],
+        ["Screening","Auto-excluded: E1 (invalid year)","All","ALL",auto_e1,"","Auto-detected"],
+        ["Screening","Auto-excluded: E2 (not English)","All","ALL",auto_e2,"","Auto-detected (pre + post-fetch)"],
+        ["Screening","Auto-excluded: E7 (insufficient detail)","All","ALL",auto_e7,"","Auto-detected"],
+        ["Screening","Pending manual screening","All","ALL",len(pending),"","See Screening_Sheet"],
+        ["Screening","Records excluded — title screen","All","ALL","","","Fill after manual"],
+        ["Screening","Records excluded — abstract screen","All","ALL","","","Fill after manual"],
+        ["Screening","Reports sought for retrieval","All","ALL","","",""],
+        ["Screening","Reports not retrieved","All","ALL","","",""],
+        ["Eligibility","Reports assessed for eligibility","All","ALL","","",""],
+        ["Eligibility","Reports excluded with reasons","All","ALL","","","E1-E9"],
+        ["Included","Studies included in final review","All","ALL","","","Fill after screening"],
     ]
+    for ri,row in enumerate(rows,5):
+        fill=PatternFill("solid",start_color=PH_CLR.get(row[0],"FFFFFF"))
+        if "auto-excluded" in str(row[1]).lower(): fill=AUTO_FILL
+        elif "duplicate" in str(row[1]).lower(): fill=PatternFill("solid",start_color="FFF2CC")
+        for ci,val in enumerate(row,2):
+            c=ws.cell(row=ri,column=ci,value=val); c.fill=fill; c.border=BDR
+            c.font=Font(name="Arial",size=9); c.alignment=Alignment(wrap_text=True,vertical="center")
 
-    for ri, row in enumerate(rows, 5):
-        fill = PatternFill("solid", start_color=PH_CLR.get(row[0], "FFFFFF"))
-
-        if "auto-excluded" in str(row[1]).lower():
-            fill = AUTO_FILL
-        elif "duplicate" in str(row[1]).lower():
-            fill = PatternFill("solid", start_color="FFF2CC")
-
-        for ci, val in enumerate(row, 2):
-            c = ws.cell(row=ri, column=ci, value=val)
-            c.fill = fill
-            c.border = BDR
-            c.font = Font(name="Arial", size=9)
-            c.alignment = Alignment(wrap_text=True, vertical="center")
-
-    # Sheet 2: Screening non-Scholar
-    non_scholar = [p for p in dim_papers if p.get("database", "") != "Google Scholar"]
-    ws2 = wb.create_sheet("Screening_Sheet")
-    write_screen(ws2, non_scholar)
+    # Sheet 2: Screening (non-Scholar)
+    non_scholar = [p for p in dim_papers if p.get("database","") != "Google Scholar"]
+    ws2=wb.create_sheet("Screening_Sheet"); write_screen(ws2, non_scholar)
 
     # Sheet 3: Google Scholar
-    scholar_papers = [p for p in dim_papers if p.get("database", "") == "Google Scholar"]
-    ws_gs = wb.create_sheet("Google_Scholar_Screening")
-    write_screen(ws_gs, scholar_papers)
+    scholar_papers = [p for p in dim_papers if p.get("database","") == "Google Scholar"]
+    ws_gs=wb.create_sheet("Google_Scholar_Screening"); write_screen(ws_gs, scholar_papers)
 
     # Sheet 4: Concept Matrix
-    ws3 = wb.create_sheet("Concept_Matrix_W&W")
-    ws3.column_dimensions["A"].width = 3
-    ws3.column_dimensions["B"].width = 4
-
-    ws3["C2"].value = f"Webster & Watson (2002) Concept Matrix — {dim_name}"
-    ws3["C2"].font = Font(bold=True, size=14, color="1F4E79", name="Arial")
+    ws3=wb.create_sheet("Concept_Matrix_W&W")
+    ws3.column_dimensions["A"].width=3; ws3.column_dimensions["B"].width=4
+    ws3["C2"].value=f"Webster & Watson (2002) Concept Matrix — {dim_name}"
+    ws3["C2"].font=Font(bold=True,size=14,color="1F4E79",name="Arial")
     ws3.merge_cells("C2:T2")
+    ws3["C3"].value="Add included papers as rows. Mark 'X' where concept is addressed."
+    ws3["C3"].font=Font(italic=True,size=9,color="595959")
 
-    ws3["C3"].value = "Add included papers as rows. Mark 'X' where concept is addressed."
-    ws3["C3"].font = Font(italic=True, size=9, color="595959")
-
-    if dim_code == "D1":
-        concepts = [
-            "Data\nStandards", "AI-\nReadiness", "Machine-\nReadable", "Semantic\nAnnotation",
-            "Standard-\nization", "Technical\nStandards", "Digital-\nReady", "AI-Native",
-            "Metadata", "Ontology", "Automation", "Compliance", "Validation", "LLM",
-            "Generative AI", "Interoperability"
-        ]
-        cfills = ["D6E4F0"] * 16
-        hclr = "1F4E79"
-    elif dim_code == "D2":
-        concepts = [
-            "Context\nEngineering", "Context\nDesign", "Context\nConstruction",
-            "Structured\nData", "Knowledge\nRepresent.", "Context\nWindow",
-            "Context\nSelection", "Answer\nQuality", "Accuracy", "Hallucination",
-            "Semantic\nContext", "Context\nPackage", "Prompt\nContext", "Efficiency",
-            "Token\nEfficiency", "Cost"
-        ]
-        cfills = ["D5E8D4"] * 16
-        hclr = "375623"
+    if dim_code=="D1":
+        concepts=["Data\nStandards","AI-\nReadiness","Machine-\nReadable","Semantic\nAnnotation",
+                  "Standard-\nization","Technical\nStandards","Digital-\nReady","AI-Native",
+                  "Metadata","Ontology","Automation","Compliance","Validation","LLM","Generative AI","Interoperability"]
+        cfills=["D6E4F0"]*16; hclr="1F4E79"
+    elif dim_code=="D2":
+        concepts=["Context\nEngineering","Context\nDesign","Context\nConstruction",
+                  "Structured\nData","Knowledge\nRepresent.","Context\nWindow",
+                  "Context\nSelection","Answer\nQuality","Accuracy","Hallucination",
+                  "Semantic\nContext","Context\nPackage","Prompt\nContext","Efficiency","Token\nEfficiency","Cost"]
+        cfills=["D5E8D4"]*16; hclr="375623"
     else:
-        concepts = [
-            "Token\nEfficiency", "Context\nCompression", "Prompt\nCompression",
-            "Answer\nQuality", "Accuracy", "Performance", "Cost\nEfficiency",
-            "Inference\nCost", "Token\nCost", "RAG", "Context\nSelection",
-            "Context\nPruning", "Question\nAnswering", "Document\nQA", "LLM", "Retrieval"
-        ]
-        cfills = ["FFF2CC"] * 16
-        hclr = "7F6000"
+        concepts=["Token\nEfficiency","Context\nCompression","Prompt\nCompression",
+                  "Answer\nQuality","Accuracy","Performance","Cost\nEfficiency",
+                  "Inference\nCost","Token\nCost","RAG","Context\nSelection",
+                  "Context\nPruning","Question\nAnswering","Document\nQA","LLM","Retrieval"]
+        cfills=["FFF2CC"]*16; hclr="7F6000"
 
-    ws3.merge_cells("C5:R5")
-    c = ws3["C5"]
-    c.value = f"{dim_code}: {dim_name}"
-    c.fill = PatternFill("solid", start_color=hclr)
-    c.font = Font(bold=True, color="FFFFFF", name="Arial", size=9)
-    c.alignment = Alignment(horizontal="center")
-
-    for ci, (h, w) in enumerate([("Author(s) Year", 28), ("Title", 40)], 3):
-        c = ws3.cell(row=6, column=ci, value=h)
-        c.font = H_FONT
-        c.fill = H_FILL
-        c.border = BDR
-        c.alignment = Alignment(horizontal="center", vertical="bottom")
-        ws3.column_dimensions[get_column_letter(ci)].width = w
-
-    for ci, (concept, cf) in enumerate(zip(concepts, cfills), 5):
-        c = ws3.cell(row=6, column=ci, value=concept)
-        c.fill = PatternFill("solid", start_color=cf)
-        c.font = Font(bold=True, name="Arial", size=8, color="1F4E79")
-        c.alignment = Alignment(text_rotation=90, horizontal="center", vertical="bottom", wrap_text=True)
-        c.border = BDR
-        ws3.column_dimensions[get_column_letter(ci)].width = 5
-
-    ws3.row_dimensions[6].height = 80
-
-    for ri in range(7, 57):
-        alt = PatternFill("solid", start_color="F8F8F8") if ri % 2 == 0 else PatternFill()
-
-        for ci in range(3, 5 + len(concepts)):
-            c = ws3.cell(row=ri, column=ci, value="")
-            c.border = BDR
-            c.fill = alt
-            c.font = Font(name="Arial", size=10)
-            c.alignment = Alignment(horizontal="center", vertical="center")
-
-        ws3.row_dimensions[ri].height = 18
+    ws3.merge_cells("C5:R5"); c=ws3["C5"]
+    c.value=f"{dim_code}: {dim_name}"; c.fill=PatternFill("solid",start_color=hclr)
+    c.font=Font(bold=True,color="FFFFFF",name="Arial",size=9); c.alignment=Alignment(horizontal="center")
+    for ci,(h,w) in enumerate([("Author(s) Year",28),("Title",40)],3):
+        c=ws3.cell(row=6,column=ci,value=h); c.font=H_FONT; c.fill=H_FILL; c.border=BDR
+        c.alignment=Alignment(horizontal="center",vertical="bottom")
+        ws3.column_dimensions[get_column_letter(ci)].width=w
+    for ci,(concept,cf) in enumerate(zip(concepts,cfills),5):
+        c=ws3.cell(row=6,column=ci,value=concept)
+        c.fill=PatternFill("solid",start_color=cf); c.font=Font(bold=True,name="Arial",size=8,color="1F4E79")
+        c.alignment=Alignment(text_rotation=90,horizontal="center",vertical="bottom",wrap_text=True)
+        c.border=BDR; ws3.column_dimensions[get_column_letter(ci)].width=5
+    ws3.row_dimensions[6].height=80
+    for ri in range(7,57):
+        alt=PatternFill("solid",start_color="F8F8F8") if ri%2==0 else PatternFill()
+        for ci in range(3,5+len(concepts)):
+            c=ws3.cell(row=ri,column=ci,value=""); c.border=BDR; c.fill=alt
+            c.font=Font(name="Arial",size=10); c.alignment=Alignment(horizontal="center",vertical="center")
+        ws3.row_dimensions[ri].height=18
 
     # Sheet 5: Exclusion Criteria
-    ws4 = wb.create_sheet("Exclusion_Criteria")
-    ws4["B2"].value = f"Exclusion Criteria (PRISMA) — {dim_name}"
-    ws4["B2"].font = Font(bold=True, size=13, color="1F4E79", name="Arial")
-    ws4.column_dimensions["B"].width = 65
+    ws4=wb.create_sheet("Exclusion_Criteria")
+    ws4["B2"].value=f"Exclusion Criteria (PRISMA) — {dim_name}"
+    ws4["B2"].font=Font(bold=True,size=13,color="1F4E79",name="Arial"); ws4.column_dimensions["B"].width=65
+    ecolors=["FFE0E0","FFE0E0","FFF2CC","FFF2CC","D5E8D4","D5E8D4","D6E4F0","D6E4F0","F3E5F5"]
+    for ri,crit in enumerate(EXCLUSION_CRITERIA,4):
+        c=ws4.cell(row=ri,column=2,value=crit); c.font=Font(name="Arial",size=10)
+        cidx=ri-4
+        c.fill=PatternFill("solid",start_color=ecolors[cidx] if cidx<len(ecolors) else "FFFFFF")
+        c.border=BDR; ws4.row_dimensions[ri].height=22
+    ws4["B14"].value="Note: E1, E2, E7 auto-detected. E2 also post-fetch. E9 = paid/not open access. E3-E6, E8 = manual."
+    ws4["B14"].font=Font(italic=True,name="Arial",size=9,color="595959")
 
-    ecolors = [
-        "FFE0E0", "FFE0E0", "FFF2CC", "FFF2CC", "D5E8D4",
-        "D5E8D4", "D6E4F0", "D6E4F0", "F3E5F5"
-    ]
-
-    for ri, crit in enumerate(EXCLUSION_CRITERIA, 4):
-        c = ws4.cell(row=ri, column=2, value=crit)
-        c.font = Font(name="Arial", size=10)
-        cidx = ri - 4
-        c.fill = PatternFill(
-            "solid",
-            start_color=ecolors[cidx] if cidx < len(ecolors) else "FFFFFF"
-        )
-        c.border = BDR
-        ws4.row_dimensions[ri].height = 22
-
-    ws4["B14"].value = (
-        "Note: E1, E2, E7 auto-detected. E2 also post-fetch. "
-        "E9 = paid/not open access. E3-E6, E8 = manual."
-    )
-    ws4["B14"].font = Font(italic=True, name="Arial", size=9, color="595959")
-
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
+    buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     return buf.read()
 
 # ── Word Template ─────────────────────────────────────────────────────────────
 def generate_word():
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
-
     doc = Document()
     doc.add_heading('Systematic Literature Review: Method & Findings', 0).alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-    for line in ['Prepared by: [Your Name]', 'Date: [Date]', 'Supervisor: Prof. Maria Wimmer']:
+    for line in ['Prepared by: [Your Name]','Date: [Date]','Supervisor: Prof. Maria Wimmer']:
         doc.add_paragraph(line)
-
     doc.add_paragraph()
 
     def add_bullet(text):
-        try:
-            doc.add_paragraph(text, style='List Bullet')
-        except Exception:
-            doc.add_paragraph(f'• {text}')
+        try: doc.add_paragraph(text, style='List Bullet')
+        except: doc.add_paragraph(f'• {text}')
 
     doc.add_heading('1. Introduction', 1)
-    doc.add_paragraph(
-        'This systematic literature review examines three dimensions related to Large Language Models (LLMs): '
-        '(1) Standardization & AI, (2) Context Engineering, and (3) Token Efficiency. '
-        'The review follows PRISMA 2020 guidelines for transparent reporting.'
-    )
+    doc.add_paragraph('This systematic literature review examines three dimensions related to Large Language Models (LLMs): (1) Standardization & AI, (2) Context Engineering, and (3) Token Efficiency. The review follows PRISMA 2020 guidelines for transparent reporting.')
     doc.add_paragraph('[Add your introduction here...]')
 
     doc.add_heading('2. Methodology', 1)
     doc.add_heading('2.1 Search Strategy', 2)
     doc.add_paragraph('Database searches were conducted in:')
-
-    for db in [
-        'Springer Link',
-        'Scopus / Elsevier',
-        'ACM Digital Library',
-        'Google Scholar (via Publish or Perish)'
-    ]:
-        add_bullet(db)
-
+    for db in ['Springer Link','Scopus / Elsevier','ACM Digital Library','Google Scholar (via Publish or Perish)']: add_bullet(db)
     doc.add_paragraph('Year range: 2015–2026 | Language: English | Types: Journal + Conference + Review')
 
     for dim, queries in [
@@ -1662,8 +748,7 @@ def generate_word():
         ]),
     ]:
         doc.add_heading(dim, 3)
-        for q in queries:
-            doc.add_paragraph(q)
+        for q in queries: doc.add_paragraph(q)
 
     doc.add_heading('2.2 PRISMA Flow', 2)
     doc.add_paragraph('PRISMA 2020 flow per dimension. See attached Excel files.')
@@ -1671,76 +756,44 @@ def generate_word():
 
     doc.add_heading('2.3 Exclusion Criteria', 2)
     doc.add_paragraph('Papers excluded based on:')
-
-    for c in EXCLUSION_CRITERIA:
-        add_bullet(c)
-
-    doc.add_paragraph(
-        'Note: E1, E2, E7 auto-detected. E9 = paid/not open access. '
-        'E3–E6, E8 = manual review.'
-    )
+    for c in EXCLUSION_CRITERIA: add_bullet(c)
+    doc.add_paragraph('Note: E1, E2, E7 auto-detected. E9 = paid/not open access. E3–E6, E8 = manual review.')
 
     doc.add_heading('2.4 Analysis Method — Webster & Watson (2002)', 2)
-    doc.add_paragraph(
-        'Concept matrix maps included papers to dimension-specific concepts to identify themes and gaps.'
-    )
+    doc.add_paragraph('Concept matrix maps included papers to dimension-specific concepts to identify themes and gaps.')
 
     doc.add_heading('3. Findings', 1)
-
     for dn, dname, themes in [
-        ('3.1', 'Dimension 1: Standardization & AI', [
-            'How do data standards enable AI-readiness?',
-            'What semantic annotation supports LLM integration?',
-            'How does standardization impact automation and compliance?'
-        ]),
-        ('3.2', 'Dimension 2: Context Engineering', [
-            'How is context engineered for LLM performance?',
-            'What structured context approaches improve answer quality?',
-            'How do context window limits affect design?'
-        ]),
-        ('3.3', 'Dimension 3: Token Efficiency', [
-            'What token compression techniques exist?',
-            'How does compression affect answer quality?',
-            'What is the cost-performance trade-off in RAG?'
-        ]),
+        ('3.1','Dimension 1: Standardization & AI',
+         ['How do data standards enable AI-readiness?','What semantic annotation supports LLM integration?','How does standardization impact automation and compliance?']),
+        ('3.2','Dimension 2: Context Engineering',
+         ['How is context engineered for LLM performance?','What structured context approaches improve answer quality?','How do context window limits affect design?']),
+        ('3.3','Dimension 3: Token Efficiency',
+         ['What token compression techniques exist?','How does compression affect answer quality?','What is the cost-performance trade-off in RAG?']),
     ]:
         doc.add_heading(f'{dn} {dname}', 2)
         doc.add_heading(f'{dn}.1 Synthesis', 3)
         doc.add_paragraph('Key themes:')
-
-        for t in themes:
-            add_bullet(t)
-
+        for t in themes: add_bullet(t)
         doc.add_paragraph('[Your synthesis here — based on included papers from Concept Matrix...]')
-
         doc.add_heading(f'{dn}.2 Summary Table', 3)
         t = doc.add_table(rows=1, cols=4)
-
-        try:
-            t.style = 'Light Grid Accent 1'
-        except Exception:
-            pass
-
-        for i, h in enumerate(['Paper (Author, Year)', 'Key Contribution', 'Concepts Addressed', 'Relevance']):
-            t.rows[0].cells[i].text = h
-
+        try: t.style = 'Light Grid Accent 1'
+        except: pass
+        for i,h in enumerate(['Paper (Author, Year)','Key Contribution','Concepts Addressed','Relevance']): t.rows[0].cells[i].text=h
         doc.add_paragraph('[Add one row per included paper...]')
 
     doc.add_heading('4. Discussion', 1)
     doc.add_paragraph('[Cross-dimensional themes, research gaps, implications...]')
-
     doc.add_heading('5. Conclusion', 1)
     doc.add_paragraph('[Key findings and future directions...]')
-
     doc.add_heading('References', 1)
     doc.add_paragraph('[List included papers in APA format]')
 
-    buf = io.BytesIO()
-    doc.save(buf)
-    buf.seek(0)
+    buf=io.BytesIO(); doc.save(buf); buf.seek(0)
     return buf.read()
 
-# ── UI Styling ────────────────────────────────────────────────────────────────
+# ── UI ────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap');
@@ -1770,413 +823,195 @@ hr{border:none!important;height:1px!important;background:linear-gradient(90deg,t
 </style>
 """, unsafe_allow_html=True)
 
-# ── Main UI ───────────────────────────────────────────────────────────────────
-tab1, tab2 = st.tabs(["📥 File Importer", "🔍 Keyword Screener"])
+tab1, tab2, tab3 = st.tabs(["📥 File Importer", "🔍 Keyword Screener", "📋 Generic Importer"])
 
 with tab1:
     st.markdown("""
     <div style="text-align:center;padding:20px 0 30px 0;">
     <h1 style="font-size:2.5rem;margin-bottom:8px;">🔬 Systematic Review Bot</h1>
     <p style="color:#8b949e;font-size:1.1rem;margin:0;">
-    Upload CSV/BIB/PDF → Auto-Screen → Fetch Abstracts + Authors + Official Keywords → 3 Workbooks + Word
+    Upload CSV/BIB → Auto-Screen → Fetch Abstracts + Keywords → 3 Workbooks + Word
     </p></div>
     """, unsafe_allow_html=True)
-
     st.markdown("---")
 
-    col_h1, col_rst1 = st.columns([4, 1])
-
+    col_h1, col_rst1 = st.columns([4,1])
     with col_h1:
-        st.markdown(
-            '<div class="sr-card"><h3 style="margin-top:0;">📁 Step 1 — Upload Files</h3>'
-            '<p style="color:#8b949e;margin-bottom:12px;">Name files like '
-            '<code>springer_d1q1.csv</code>, <code>acm_d1q2.bib</code>, '
-            '<code>scopus_d2q1.csv</code>, <code>scholar_d3q1.csv</code></p></div>',
-            unsafe_allow_html=True
-        )
-
+        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📁 Step 1 — Upload Files</h3><p style="color:#8b949e;margin-bottom:12px;">Name files like <code>springer_d1q1.csv</code>, <code>acm_d1q2.bib</code>, <code>scopus_d2q1.csv</code>, <code>scholar_d3q1.csv</code></p></div>', unsafe_allow_html=True)
     with col_rst1:
         st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-
         if st.button("🔄 Reset / New Run", key="reset_tab1", use_container_width=True):
-            st.session_state.clear()
-            st.rerun()
+            st.session_state.clear(); st.rerun()
+    st.caption("Supports: Springer CSV · Scopus CSV · Google Scholar CSV (Publish or Perish) · ACM BibTeX")
 
-    st.caption("Supports: Springer CSV · Scopus CSV · Google Scholar CSV (Publish or Perish) · ACM BibTeX · PDF papers")
-
-    uploaded = st.file_uploader(
-        "Drop all files here",
-        type=["csv", "bib", "pdf"],
-        accept_multiple_files=True,
-        label_visibility="collapsed"
-    )
+    uploaded = st.file_uploader("Drop all files here", type=["csv","bib"],
+                                  accept_multiple_files=True, label_visibility="collapsed")
 
     if uploaded:
         st.markdown("---")
-
-        all_papers, stats, parse_log = [], {"identification": {}}, []
+        all_papers, stats, parse_log = [], {"identification":{}}, []
 
         for f in uploaded:
             fname = f.name.lower()
             qid = "UNKNOWN"
-
-            for q in ["d1q1", "d1q2", "d2q1", "d2q2", "d2q3", "d3q1", "d3q2", "d3q3"]:
-                if q in fname:
-                    qid = q.upper()
-                    break
-
-            raw_bytes = f.read()
-
-            if fname.endswith(".pdf"):
-                papers = parse_pdf_bytes(raw_bytes, qid, f.name)
-                db = "PDF"
+            for q in ["d1q1","d1q2","d2q1","d2q2","d2q3","d3q1","d3q2","d3q3"]:
+                if q in fname: qid=q.upper(); break
+            cf = f.read().decode("utf-8",errors="replace")
+            if fname.endswith(".bib"):
+                papers=parse_bib(cf,qid); db="ACM"
             else:
-                cf = raw_bytes.decode("utf-8", errors="replace")
-
-                if fname.endswith(".bib"):
-                    papers = parse_bib(cf, qid)
-                    db = "ACM"
-                else:
-                    ctype = detect_csv_type(cf, fname)
-
-                    if ctype == "springer":
-                        papers = parse_springer_csv(cf, qid)
-                        db = "Springer"
-                    elif ctype in ("scopus", "scopus_pop"):
-                        papers = parse_scopus_pop_csv(cf, qid) if ctype == "scopus_pop" else parse_scopus_csv(cf, qid)
-                        db = "Elsevier/Scopus"
-                    else:
-                        papers = parse_scholar_csv(cf, qid)
-                        db = "Google Scholar"
-
-            parse_log.append((f.name, db, qid, len(papers)))
-            stats["identification"].setdefault(db, {}).setdefault(qid, 0)
-            stats["identification"][db][qid] += len(papers)
+                ctype=detect_csv_type(cf,fname)
+                if ctype=="springer":         papers=parse_springer_csv(cf,qid);   db="Springer"
+                elif ctype in("scopus","scopus_pop"):
+                    papers=parse_scopus_pop_csv(cf,qid) if ctype=="scopus_pop" else parse_scopus_csv(cf,qid)
+                    db="Elsevier/Scopus"
+                else:                         papers=parse_scholar_csv(cf,qid);    db="Google Scholar"
+            parse_log.append((f.name,db,qid,len(papers)))
+            stats["identification"].setdefault(db,{}).setdefault(qid,0)
+            stats["identification"][db][qid]+=len(papers)
             all_papers.extend(papers)
 
         unique, dupe_list = deduplicate(all_papers)
         unique, auto_counts = auto_screen(unique)
-        pending = [p for p in unique if p.get("screening_status") == "Pending"]
-
+        pending = [p for p in unique if p.get("screening_status")=="Pending"]
         stats.update({
-            "total_raw": len(all_papers),
-            "duplicates": len(dupe_list),
-            "after_dedup": len(unique),
-            "auto_total": sum(v for k, v in auto_counts.items() if k != "E1_recovered"),
+            "total_raw":len(all_papers), "duplicates":len(dupe_list),
+            "after_dedup":len(unique), "auto_total":sum(v for k,v in auto_counts.items() if k!="E1_recovered"),
         })
 
-        st.markdown(
-            '<div class="sr-card"><h3 style="margin-top:0;">📊 Step 2 — Files Parsed</h3></div>',
-            unsafe_allow_html=True
-        )
-
-        for fname, db, qid, n in parse_log:
-            db_cls = {
-                "Springer": "springer",
-                "ACM": "acm",
-                "Elsevier/Scopus": "scopus",
-                "Google Scholar": "scholar",
-                "PDF": "acm"
-            }.get(db, "springer")
-
-            st.markdown(
-                f"<div style='margin:4px 0;'><code>{fname}</code> → "
-                f"<span class='tag tag-{db_cls}'>{db}</span> "
-                f"<code>{qid}</code> → <b>{n} papers</b></div>",
-                unsafe_allow_html=True
-            )
+        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📊 Step 2 — Files Parsed</h3></div>',unsafe_allow_html=True)
+        for fname,db,qid,n in parse_log:
+            db_cls={"Springer":"springer","ACM":"acm","Elsevier/Scopus":"scopus","Google Scholar":"scholar"}.get(db,"springer")
+            st.markdown(f"<div style='margin:4px 0;'><code>{fname}</code> → <span class='tag tag-{db_cls}'>{db}</span> <code>{qid}</code> → <b>{n} papers</b></div>",unsafe_allow_html=True)
 
         st.markdown("---")
-        st.markdown(
-            '<div class="sr-card"><h3 style="margin-top:0;">📈 Step 3 — Summary by Dimension</h3></div>',
-            unsafe_allow_html=True
-        )
-
-        c1, c2, c3, c4 = st.columns(4)
-
-        with c1:
-            st.markdown(
-                f'<div class="stat-box"><div class="stat-num">{stats["total_raw"]}</div>'
-                f'<div class="stat-lbl">Total Raw</div></div>',
-                unsafe_allow_html=True
-            )
-
-        with c2:
-            st.markdown(
-                f'<div class="stat-box"><div class="stat-num">{len(dupe_list)}</div>'
-                f'<div class="stat-lbl">Duplicates Removed</div></div>',
-                unsafe_allow_html=True
-            )
-
-        with c3:
-            st.markdown(
-                f'<div class="stat-box"><div class="stat-num">{stats["after_dedup"]}</div>'
-                f'<div class="stat-lbl">Unique Papers</div></div>',
-                unsafe_allow_html=True
-            )
-
+        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📈 Step 3 — Summary by Dimension</h3></div>',unsafe_allow_html=True)
+        c1,c2,c3,c4=st.columns(4)
+        with c1: st.markdown(f'<div class="stat-box"><div class="stat-num">{stats["total_raw"]}</div><div class="stat-lbl">Total Raw</div></div>',unsafe_allow_html=True)
+        with c2: st.markdown(f'<div class="stat-box"><div class="stat-num">{len(dupe_list)}</div><div class="stat-lbl">Duplicates Removed</div></div>',unsafe_allow_html=True)
+        with c3: st.markdown(f'<div class="stat-box"><div class="stat-num">{stats["after_dedup"]}</div><div class="stat-lbl">Unique Papers</div></div>',unsafe_allow_html=True)
         with c4:
-            d_counts = {}
-
-            for p in unique:
-                d = p.get("dimension", "")[:2]
-                d_counts[d] = d_counts.get(d, 0) + 1
-
-            summary = " / ".join(f"{k}:{v}" for k, v in sorted(d_counts.items()))
-
-            st.markdown(
-                f'<div class="stat-box"><div class="stat-num" style="font-size:1.1rem">{summary}</div>'
-                f'<div class="stat-lbl">By Dimension</div></div>',
-                unsafe_allow_html=True
-            )
+            d_counts={}
+            for p in unique: d=p.get("dimension","")[:2]; d_counts[d]=d_counts.get(d,0)+1
+            summary=" / ".join(f"{k}:{v}" for k,v in sorted(d_counts.items()))
+            st.markdown(f'<div class="stat-box"><div class="stat-num" style="font-size:1.1rem">{summary}</div><div class="stat-lbl">By Dimension</div></div>',unsafe_allow_html=True)
 
         st.markdown("---")
+        need_abstract=[p for p in pending if p.get("doi","").strip() or p.get("url","").strip()]
+        est_mins=max(1,len(need_abstract)//15)
+        st.markdown(f'<div class="sr-card"><h3 style="margin-top:0;">🚀 Step 4 — Generate Workbooks</h3><p style="color:#8b949e;margin-bottom:0;">Fetch abstracts + keywords for <b>{len(need_abstract)} pending papers</b> · 3 Excel workbooks + Word (~{est_mins} min)</p></div>',unsafe_allow_html=True)
 
-        need_abstract = [
-            p for p in pending
-            if p.get("doi", "").strip() or p.get("url", "").strip()
-        ]
-
-        est_mins = max(1, len(need_abstract) // 15)
-
-        st.markdown(
-            f'<div class="sr-card"><h3 style="margin-top:0;">🚀 Step 4 — Generate Workbooks</h3>'
-            f'<p style="color:#8b949e;margin-bottom:0;">Fetch abstracts + authors + keywords for '
-            f'<b>{len(need_abstract)} pending papers</b> · 3 Excel workbooks + Word (~{est_mins} min)</p></div>',
-            unsafe_allow_html=True
-        )
-
-        fetch_toggle = st.checkbox("Fetch abstracts + authors + keywords automatically", value=True)
-
+        fetch_toggle=st.checkbox("Fetch abstracts + keywords automatically",value=True)
         with st.expander("⚙️ Advanced Options"):
-            max_workers = st.slider("Concurrent fetch workers", 1, 5, 3)
+            max_workers=st.slider("Concurrent fetch workers",1,5,3)
             st.info("PDFs, blocked sites, Scopus inward links auto-skipped.")
 
-        generate_clicked = st.button("🚀 Generate All Workbooks", type="primary", use_container_width=True)
+        generate_clicked=st.button("🚀 Generate All Workbooks",type="primary",use_container_width=True)
 
         if generate_clicked:
-            prog = st.progress(0)
-            s_txt = st.empty()
-            d_txt = st.empty()
+            prog=st.progress(0); s_txt=st.empty(); d_txt=st.empty()
 
             if fetch_toggle and need_abstract:
-                t0 = time.time()
-                total = len(need_abstract)
-                s_txt.markdown("🔄 **Fetching abstracts + authors + keywords...**")
+                t0=time.time(); total=len(need_abstract)
+                s_txt.markdown("🔄 **Fetching abstracts + keywords...**")
 
-                pdf_c = sum(1 for p in need_abstract if _is_pdf(p.get("url", "")))
-                blk_c = sum(1 for p in need_abstract if _is_blocked(p.get("url", "")))
-                scp_c = sum(1 for p in need_abstract if _is_scopus_inward(p.get("url", "")))
-
-                if pdf_c + blk_c + scp_c > 0:
+                pdf_c=sum(1 for p in need_abstract if _is_pdf(p.get("url","")))
+                blk_c=sum(1 for p in need_abstract if _is_blocked(p.get("url","")))
+                scp_c=sum(1 for p in need_abstract if _is_scopus_inward(p.get("url","")))
+                if pdf_c+blk_c+scp_c>0:
                     st.info(f"Auto-skipping: {pdf_c} PDFs · {blk_c} blocked · {scp_c} Scopus links")
 
-                results = {}
-                found = completed = 0
-                author_found = 0
-                keyword_found = 0
+                results={}; found=completed=0
 
                 def fetch_one(ip):
-                    i, p = ip
-                    abstract, keywords, authors = fetch_abstract_keywords_authors_for_paper(p)
-                    return i, abstract, keywords, authors
+                    i,p=ip
+                    abstract, keywords = fetch_abstract_and_keywords_for_paper(p)
+                    return i, abstract, keywords
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
-                    futures = {
-                        ex.submit(fetch_one, (i, p)): i
-                        for i, p in enumerate(need_abstract)
-                    }
-
+                    futures={ex.submit(fetch_one,(i,p)):i for i,p in enumerate(need_abstract)}
                     for future in concurrent.futures.as_completed(futures):
-                        try:
-                            idx, abstract, keywords, authors = future.result()
-                        except Exception:
-                            idx = futures[future]
-                            abstract, keywords, authors = "", "", ""
+                        idx,abstract,keywords=future.result()
+                        results[idx]=(abstract,keywords)
+                        if abstract: found+=1
+                        completed+=1
+                        pct=int((completed/total)*100)
+                        prog.progress(pct/100)
+                        elapsed=time.time()-t0
+                        rate=completed/elapsed if elapsed>0 else 1
+                        m,s=divmod(int((total-completed)/rate),60)
+                        d_txt.markdown(f"**{pct}%** · ⏱ {m}m {s}s remaining · ✅ {found} fetched · {completed}/{total}")
 
-                        results[idx] = (abstract, keywords, authors)
-
-                        if abstract:
-                            found += 1
-                        if keywords:
-                            keyword_found += 1
-                        if authors:
-                            author_found += 1
-
-                        completed += 1
-                        pct = int((completed / total) * 100)
-                        prog.progress(pct / 100)
-
-                        elapsed = time.time() - t0
-                        rate = completed / elapsed if elapsed > 0 else 1
-                        m, s = divmod(int((total - completed) / rate), 60)
-
-                        d_txt.markdown(
-                            f"**{pct}%** · ⏱ {m}m {s}s remaining · "
-                            f"✅ Abstracts: {found} · 🏷 Keywords: {keyword_found} · "
-                            f"👥 Authors: {author_found} · {completed}/{total}"
-                        )
-
-                for idx, (abstract, keywords, authors) in results.items():
-                    if abstract:
-                        need_abstract[idx]["abstract"] = abstract
-
-                    if keywords and not need_abstract[idx].get("keywords", ""):
-                        need_abstract[idx]["keywords"] = keywords
-
-                    authors = _normalize_authors_commas(authors)
-                    if authors and _author_count(authors) > _author_count(need_abstract[idx].get("authors", "")):
-                        need_abstract[idx]["authors"] = authors
+                for idx,(abstract,keywords) in results.items():
+                    if abstract: need_abstract[idx]["abstract"]=abstract
+                    if keywords and not need_abstract[idx].get("keywords",""):
+                        need_abstract[idx]["keywords"]=keywords
 
                 prog.progress(1.0)
-
-                s_txt.markdown(
-                    f"✅ **Done!** Abstracts: {found}/{total} · "
-                    f"Keywords: {keyword_found}/{total} · Authors: {author_found}/{total} "
-                    f"in {int(time.time() - t0)}s"
-                )
-
+                s_txt.markdown(f"✅ **Done!** {found}/{total} abstracts in {int(time.time()-t0)}s")
                 d_txt.empty()
 
                 s_txt.markdown("🌐 **Post-fetch language check...**")
                 unique, pf_flagged = post_fetch_language_check(unique)
-
                 if pf_flagged > 0:
-                    st.markdown(
-                        f'<div class="warn-box">⚠️ <b>{pf_flagged} papers</b> flagged E2 post-fetch</div>',
-                        unsafe_allow_html=True
-                    )
-
+                    st.markdown(f'<div class="warn-box">⚠️ <b>{pf_flagged} papers</b> flagged E2 post-fetch</div>',unsafe_allow_html=True)
                 s_txt.empty()
 
             s_txt.markdown("📊 **Building dimension workbooks...**")
-
-            for dim_code, dim_name in DIMENSION_NAMES.items():
-                excel_bytes = build_dimension_excel(unique, dupe_list, dim_code, dim_name)
-
+            for dim_code,dim_name in DIMENSION_NAMES.items():
+                excel_bytes=build_dimension_excel(unique,dupe_list,dim_code,dim_name)
                 if excel_bytes:
-                    st.session_state[f"excel_{dim_code}"] = excel_bytes
-                    st.session_state[f"fname_{dim_code}"] = f"{dim_name}_{datetime.now():%Y%m%d_%H%M}.xlsx"
+                    st.session_state[f"excel_{dim_code}"]=excel_bytes
+                    st.session_state[f"fname_{dim_code}"]=f"{dim_name}_{datetime.now():%Y%m%d_%H%M}.xlsx"
 
             s_txt.markdown("📝 **Generating Word template...**")
-
             try:
-                st.session_state["word_bytes"] = generate_word()
-                st.session_state["word_fname"] = f"SR_Method_Findings_{datetime.now():%Y%m%d_%H%M}.docx"
+                st.session_state["word_bytes"]=generate_word()
+                st.session_state["word_fname"]=f"SR_Method_Findings_{datetime.now():%Y%m%d_%H%M}.docx"
             except Exception as e:
                 st.warning(f"Word failed: {e}")
 
-            st.session_state["excel_ready"] = True
-            st.session_state["total"] = stats["after_dedup"]
-            st.session_state["dupes"] = len(dupe_list)
-            st.session_state["abstracts"] = sum(1 for p in unique if p.get("abstract", "").strip())
-            st.session_state["authors_count"] = sum(1 for p in unique if p.get("authors", "").strip())
-            st.session_state["keywords_count"] = sum(1 for p in unique if p.get("keywords", "").strip())
-            st.session_state["auto_total"] = stats.get("auto_total", 0)
-
-            s_txt.empty()
-            prog.empty()
+            st.session_state["excel_ready"]=True
+            st.session_state["total"]=stats["after_dedup"]
+            st.session_state["dupes"]=len(dupe_list)
+            st.session_state["abstracts"]=sum(1 for p in unique if p.get("abstract","").strip())
+            st.session_state["auto_total"]=stats.get("auto_total",0)
+            s_txt.empty(); prog.empty()
 
         if st.session_state.get("excel_ready"):
             st.markdown("---")
-            st.markdown(
-                '<div class="sr-card"><h3 style="margin-top:0;">📥 Step 5 — Download</h3></div>',
-                unsafe_allow_html=True
-            )
-
+            st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📥 Step 5 — Download</h3></div>',unsafe_allow_html=True)
             st.markdown("#### 📊 Dimension Workbooks")
-
-            for dim_code in ["D1", "D2", "D3"]:
+            for dim_code in ["D1","D2","D3"]:
                 if f"excel_{dim_code}" in st.session_state:
-                    dim_name = DIMENSION_NAMES[dim_code]
-
-                    st.markdown(
-                        f'<div class="sheet-card"><b>{dim_name}</b> — PRISMA · Screening '
-                        f'(full authors + keywords) · Google Scholar · Concept Matrix · Exclusion Criteria</div>',
-                        unsafe_allow_html=True
-                    )
-
-                    st.download_button(
-                        f"📥 Download {dim_name}",
+                    dim_name=DIMENSION_NAMES[dim_code]
+                    st.markdown(f'<div class="sheet-card"><b>{dim_name}</b> — PRISMA · Screening (full authors + keywords) · Google Scholar · Concept Matrix · Exclusion Criteria</div>',unsafe_allow_html=True)
+                    st.download_button(f"📥 Download {dim_name}",
                         data=st.session_state[f"excel_{dim_code}"],
                         file_name=st.session_state[f"fname_{dim_code}"],
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key=f"dl_{dim_code}"
-                    )
-
+                        key=f"dl_{dim_code}")
             if "word_bytes" in st.session_state:
                 st.markdown("#### 📝 Word Template")
-                st.markdown(
-                    '<div class="sheet-card"><b>Method & Findings Template</b></div>',
-                    unsafe_allow_html=True
-                )
-
-                st.download_button(
-                    "📥 Download Word Template",
+                st.markdown('<div class="sheet-card"><b>Method & Findings Template</b></div>',unsafe_allow_html=True)
+                st.download_button("📥 Download Word Template",
                     data=st.session_state["word_bytes"],
                     file_name=st.session_state["word_fname"],
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    key="dl_word"
-                )
-
-            n = st.session_state.get("total", 0)
-            a = st.session_state.get("abstracts", 0)
-            au = st.session_state.get("authors_count", 0)
-            kw = st.session_state.get("keywords_count", 0)
-            d = st.session_state.get("dupes", 0)
-            at = st.session_state.get("auto_total", 0)
-
-            st.success(
-                f"✅ {n} papers · {a} with abstract · {au} with authors · "
-                f"{kw} with keywords · {d} dupes removed · {at} auto-excluded (E1/E2/E7)"
-            )
+                    key="dl_word")
+            n=st.session_state.get("total",0); a=st.session_state.get("abstracts",0)
+            d=st.session_state.get("dupes",0); at=st.session_state.get("auto_total",0)
+            st.success(f"✅ {n} papers · {a} with abstract · {d} dupes removed · {at} auto-excluded (E1/E2/E7)")
 
     else:
         st.markdown("---")
-        st.markdown(
-            '<div class="sr-card"><h3 style="margin-top:0;">📋 File Naming Convention</h3></div>',
-            unsafe_allow_html=True
-        )
-
-        st.dataframe(
-            pd.DataFrame({
-                "File": [
-                    "springer_d1q1.csv",
-                    "springer_d1q2.csv",
-                    "acm_d1q1.bib",
-                    "acm_d1q2.bib",
-                    "scopus_d2q1.csv",
-                    "scholar_d3q1.csv"
-                ],
-                "DB": [
-                    "Springer",
-                    "Springer",
-                    "ACM",
-                    "ACM",
-                    "Elsevier/Scopus",
-                    "Google Scholar"
-                ],
-                "Query": [
-                    "D1Q1",
-                    "D1Q2",
-                    "D1Q1",
-                    "D1Q2",
-                    "D2Q1",
-                    "D3Q1"
-                ],
-                "Format": [
-                    "CSV",
-                    "CSV",
-                    "BibTeX",
-                    "BibTeX",
-                    "CSV",
-                    "CSV"
-                ],
-            }),
-            use_container_width=True,
-            hide_index=True
-        )
-
+        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📋 File Naming Convention</h3></div>',unsafe_allow_html=True)
+        st.dataframe(pd.DataFrame({
+            "File":  ["springer_d1q1.csv","springer_d1q2.csv","acm_d1q1.bib","acm_d1q2.bib","scopus_d2q1.csv","scholar_d3q1.csv"],
+            "DB":    ["Springer","Springer","ACM","ACM","Elsevier/Scopus","Google Scholar"],
+            "Query": ["D1Q1","D1Q2","D1Q1","D1Q2","D2Q1","D3Q1"],
+            "Format":["CSV","CSV","BibTeX","BibTeX","CSV","CSV"],
+        }),use_container_width=True,hide_index=True)
         st.info("💡 Query ID (d1q1, d2q2 etc.) must be in filename.")
 
 with tab2:
@@ -2186,178 +1021,100 @@ with tab2:
     <p style="color:#8b949e;margin:0;">Upload Excel → Paste search strings → Screen papers → Download results</p>
     </div>
     """, unsafe_allow_html=True)
-
     st.markdown("---")
 
     US_UK = {
-        'standardization': 'standardisation',
-        'standardisation': 'standardization',
-        'optimization': 'optimisation',
-        'optimisation': 'optimization',
-        'organization': 'organisation',
-        'organisation': 'organization',
-        'anonymization': 'anonymisation',
-        'anonymisation': 'anonymization',
-        'tokenization': 'tokenisation',
-        'tokenisation': 'tokenization',
-        'digitalization': 'digitalisation',
-        'digitalisation': 'digitalization',
-        'digitization': 'digitisation',
-        'digitisation': 'digitization',
-        'normalization': 'normalisation',
-        'normalisation': 'normalization',
-        'utilization': 'utilisation',
-        'utilisation': 'utilization',
-        'generalization': 'generalisation',
-        'generalisation': 'generalization',
-        'contextualization': 'contextualisation',
-        'contextualisation': 'contextualization',
-        'formalization': 'formalisation',
-        'formalisation': 'formalization',
-        'serialization': 'serialisation',
-        'serialisation': 'serialization',
-        'modelling': 'modeling',
-        'modeling': 'modelling',
-        'analyse': 'analyze',
-        'analyze': 'analyse',
-        'behaviour': 'behavior',
-        'behavior': 'behaviour',
+        'standardization':'standardisation','standardisation':'standardization',
+        'optimization':'optimisation','optimisation':'optimization',
+        'organization':'organisation','organisation':'organization',
+        'anonymization':'anonymisation','anonymisation':'anonymization',
+        'tokenization':'tokenisation','tokenisation':'tokenization',
+        'digitalization':'digitalisation','digitalisation':'digitalization',
+        'digitization':'digitisation','digitisation':'digitization',
+        'normalization':'normalisation','normalisation':'normalization',
+        'utilization':'utilisation','utilisation':'utilization',
+        'generalization':'generalisation','generalisation':'generalization',
+        'contextualization':'contextualisation','contextualisation':'contextualization',
+        'formalization':'formalisation','formalisation':'formalization',
+        'serialization':'serialisation','serialisation':'serialization',
+        'modelling':'modeling','modeling':'modelling',
+        'analyse':'analyze','analyze':'analyse',
+        'behaviour':'behavior','behavior':'behaviour',
     }
 
     def extract_keywords(raw):
         cleaned = raw
         cleaned = re.sub(r'(?m)^\s*\+\s*$', ' ', cleaned)
         cleaned = re.sub(r'\bAND\b', ' ', cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r'\bOR\b', ' ', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\bOR\b',  ' ', cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r'\bNOT\b', ' ', cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r'[+()\n\r]', ' ', cleaned)
-
         quoted = []
-
         for m in re.finditer(r'"([^"]{2,})"', cleaned):
             t = m.group(1).strip().lower()
-            if t:
-                quoted.append(t)
-
+            if t: quoted.append(t)
         no_quotes = re.sub(r'"[^"]*"', ' ', cleaned).replace('"', ' ')
         singles = []
-
         for token in no_quotes.split():
             t = token.strip('.,;:-()')
-
-            if not t or len(t) < 2:
-                continue
-
+            if not t or len(t) < 2: continue
             tl = t.lower()
-
-            if tl in ('and', 'or', 'not'):
-                continue
-
+            if tl in ('and','or','not'): continue
             singles.append(tl)
-
-        seen = set()
-        result = []
-
+        seen = set(); result = []
         for t in quoted + singles:
             t = t.strip()
-
-            if t and t not in seen:
-                seen.add(t)
-                result.append(t)
-
+            if t and t not in seen: seen.add(t); result.append(t)
         return result
-
 
     def expand_keywords(terms):
         expanded = list(terms)
-
         for term in terms:
             words = term.lower().split()
-            alt_words = []
-            changed = False
-
+            alt_words = []; changed = False
             for w in words:
                 alt = US_UK.get(w)
-
-                if alt:
-                    alt_words.append(alt)
-                    changed = True
-                else:
-                    alt_words.append(w)
-
+                if alt: alt_words.append(alt); changed = True
+                else: alt_words.append(w)
             if changed:
                 alt_term = ' '.join(alt_words)
-
-                if alt_term not in expanded:
-                    expanded.append(alt_term)
-
+                if alt_term not in expanded: expanded.append(alt_term)
         return expanded
 
-
     def screen_paper(title, abstract, keywords):
-        has_title = bool(title.strip())
+        has_title    = bool(title.strip())
         has_abstract = bool(abstract.strip())
-
-        title_hits = [kw for kw in keywords if kw in title.lower()] if has_title else []
+        title_hits    = [kw for kw in keywords if kw in title.lower()]    if has_title    else []
         abstract_hits = [kw for kw in keywords if kw in abstract.lower()] if has_abstract else []
-
         all_hits = list(set(title_hits + abstract_hits))
-
         if has_title and has_abstract:
-            if all_hits:
-                return "Include", "", f"Match in title+abstract: {', '.join(all_hits[:5])}"
-            else:
-                return "Exclude", "E4", "No keyword match in title or abstract"
-
+            if all_hits: return "Include", "", f"Match in title+abstract: {', '.join(all_hits[:5])}"
+            else:        return "Exclude", "E4", "No keyword match in title or abstract"
         elif has_title and not has_abstract:
-            if title_hits:
-                return "Include", "", f"Match in title: {', '.join(title_hits[:5])}"
-            else:
-                return "Pending", "", "No title keyword match — abstract missing, check manually"
-
+            if title_hits: return "Include", "", f"Match in title: {', '.join(title_hits[:5])}"
+            else:          return "Pending", "", "No title keyword match — abstract missing, check manually"
         else:
             return "Pending", "", "No title or abstract — check manually"
 
-    col_l, col_r = st.columns([1, 1])
-
+    col_l, col_r = st.columns([1,1])
     with col_l:
-        col_title, col_reset = st.columns([3, 1])
-
+        col_title, col_reset = st.columns([3,1])
         with col_title:
-            st.markdown(
-                '<div class="sr-card"><h3 style="margin-top:0;">📤 Upload Screening Excel</h3></div>',
-                unsafe_allow_html=True
-            )
-
+            st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📤 Upload Screening Excel</h3></div>', unsafe_allow_html=True)
         with col_reset:
             st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-
             if st.button("🔄 Reset / New File", key="reset_screener", use_container_width=True):
-                st.session_state.clear()
-                st.rerun()
-
+                st.session_state.clear(); st.rerun()
         screener_xl = st.file_uploader("Upload Excel (.xlsx)", type=["xlsx"], key="screener_upload")
 
     with col_r:
-        st.markdown(
-            '<div class="sr-card"><h3 style="margin-top:0;">🔤 Search Strings</h3>'
-            '<p style="color:#8b949e;font-size:0.85rem;margin-bottom:8px;">'
-            'Separate multiple queries with a line containing just <code>+</code></p></div>',
-            unsafe_allow_html=True
-        )
-
-        search_input = st.text_area(
-            "Search strings",
-            value="",
-            height=220,
+        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">🔤 Search Strings</h3><p style="color:#8b949e;font-size:0.85rem;margin-bottom:8px;">Separate multiple queries with a line containing just <code>+</code></p></div>', unsafe_allow_html=True)
+        search_input = st.text_area("Search strings", value="", height=220,
             placeholder='("data standards" OR "standardization")\nAND ("machine-readable" OR "AI-ready")\nAND ("large language models" OR LLM)\n+\n("machine-readable standards")\nAND (metadata OR ontology)\nAND (automation OR compliance)',
-            label_visibility="collapsed",
-            key="search_input"
-        )
+            label_visibility="collapsed", key="search_input")
 
     if screener_xl and search_input.strip():
         file_id = screener_xl.name + str(screener_xl.size)
-
         if st.session_state.get("screener_file_id") != file_id:
             st.session_state["screener_file_id"] = file_id
             st.session_state["kw_parsed"] = False
@@ -2365,169 +1122,93 @@ with tab2:
 
         raw_kw = extract_keywords(search_input)
         keywords = expand_keywords(raw_kw)
-
         if not keywords:
             st.error("No keywords found — check your search strings.")
         else:
-            col_parse, _ = st.columns([1, 2])
-
+            col_parse, _ = st.columns([1,2])
             with col_parse:
                 parse_clicked = st.button("✅ Parse Keywords", use_container_width=True, key="parse_btn")
-
             if parse_clicked or st.session_state.get("kw_parsed"):
                 st.session_state["kw_parsed"] = True
                 st.session_state["current_keywords"] = keywords
-
                 with st.expander(f"📋 {len(keywords)} keywords (with US/UK variants) — verify", expanded=True):
                     st.markdown(", ".join(f"`{k}`" for k in keywords))
                     st.caption("Fix search string above and click Parse again if needed.")
-
                 st.markdown("---")
 
-            if st.session_state.get("kw_parsed") and st.button(
-                "🔍 Screen Papers",
-                type="primary",
-                use_container_width=True,
-                key="screen_btn"
-            ):
+            if st.session_state.get("kw_parsed") and st.button("🔍 Screen Papers", type="primary", use_container_width=True, key="screen_btn"):
                 keywords = st.session_state.get("current_keywords", keywords)
-
                 import openpyxl
                 from openpyxl.styles import PatternFill
-
-                INC = PatternFill("solid", start_color="D5E8D4")
-                EXC = PatternFill("solid", start_color="FFE0E0")
+                INC  = PatternFill("solid", start_color="D5E8D4")
+                EXC  = PatternFill("solid", start_color="FFE0E0")
                 PEND = PatternFill("solid", start_color="FFF8DC")
 
                 wb = openpyxl.load_workbook(io.BytesIO(screener_xl.read()))
-
                 inc_tot = exc_tot = skip_tot = pend_tot = 0
 
                 for sname in wb.sheetnames:
-                    if "Screening_Sheet" not in sname and "Google_Scholar_Screening" not in sname:
-                        continue
-
+                    if "Screening_Sheet" not in sname and "Google_Scholar_Screening" not in sname: continue
                     ws = wb[sname]
                     hdrs = {str(c.value or "").strip(): c.column for c in ws[1]}
-
                     tc = hdrs.get("Title")
                     ac = hdrs.get("Abstract") or hdrs.get("Abstract (snippet)")
                     sc = hdrs.get("Screening Status")
                     rc = hdrs.get("Exclusion Reason")
                     nc = hdrs.get("Notes")
+                    if not tc or not sc: continue
 
-                    if not tc or not sc:
-                        continue
-
-                    prog = st.progress(0)
-                    stat = st.empty()
+                    prog = st.progress(0); stat = st.empty()
                     total = ws.max_row - 1
 
-                    for ri in range(2, ws.max_row + 1):
+                    for ri in range(2, ws.max_row+1):
                         status = str(ws.cell(ri, sc).value or "").strip()
-
                         if status == "Exclude":
                             skip_tot += 1
-                            prog.progress(min((ri - 1) / max(total, 1), 1.0))
-                            continue
+                            prog.progress(min((ri-1)/max(total,1),1.0)); continue
 
-                        title_val = str(ws.cell(ri, tc).value or "")
+                        title_val    = str(ws.cell(ri, tc).value or "")
                         abstract_val = str(ws.cell(ri, ac).value or "") if ac else ""
-
                         status_new, reason_new, note_new = screen_paper(title_val, abstract_val, keywords)
 
                         ws.cell(ri, sc).value = status_new
-
-                        if rc and reason_new:
-                            ws.cell(ri, rc).value = reason_new
-
+                        if rc and reason_new: ws.cell(ri, rc).value = reason_new
                         if nc and note_new:
                             ex = str(ws.cell(ri, nc).value or "")
-                            ws.cell(ri, nc).value = (ex + " | " if ex else "") + note_new
+                            ws.cell(ri, nc).value = (ex+" | " if ex else "") + note_new
 
                         if status_new == "Include":
-                            for ci in range(1, ws.max_column + 1):
-                                ws.cell(ri, ci).fill = INC
+                            for ci in range(1, ws.max_column+1): ws.cell(ri, ci).fill = INC
                             inc_tot += 1
-
                         elif status_new == "Exclude":
-                            for ci in range(1, ws.max_column + 1):
-                                ws.cell(ri, ci).fill = EXC
+                            for ci in range(1, ws.max_column+1): ws.cell(ri, ci).fill = EXC
                             exc_tot += 1
-
                         else:
-                            for ci in range(1, ws.max_column + 1):
-                                ws.cell(ri, ci).fill = PEND
+                            for ci in range(1, ws.max_column+1): ws.cell(ri, ci).fill = PEND
                             pend_tot += 1
 
-                        prog.progress(min((ri - 1) / max(total, 1), 1.0))
-                        stat.text(f"Row {ri - 1}/{total}...")
+                        prog.progress(min((ri-1)/max(total,1),1.0))
+                        stat.text(f"Row {ri-1}/{total}...")
 
-                    prog.progress(1.0)
-                    stat.empty()
+                    prog.progress(1.0); stat.empty()
 
                 st.markdown("---")
+                c1,c2,c3,c4,c5 = st.columns(5)
+                with c1: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#3fb950">{inc_tot}</div><div class="stat-lbl">✅ Included</div></div>', unsafe_allow_html=True)
+                with c2: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#f85149">{exc_tot}</div><div class="stat-lbl">❌ Excluded E4</div></div>', unsafe_allow_html=True)
+                with c3: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#e3b341">{pend_tot}</div><div class="stat-lbl">⏳ Pending</div></div>', unsafe_allow_html=True)
+                with c4: st.markdown(f'<div class="stat-box"><div class="stat-num" style="color:#8b949e">{skip_tot}</div><div class="stat-lbl">⏭️ Skipped</div></div>', unsafe_allow_html=True)
+                with c5: st.markdown(f'<div class="stat-box"><div class="stat-num">{inc_tot+exc_tot+pend_tot+skip_tot}</div><div class="stat-lbl">Total</div></div>', unsafe_allow_html=True)
+                st.markdown('<div class="warn-box">🟢 Include = keyword match · 🔴 Exclude E4 = no match in title+abstract · 🟡 Pending = abstract missing</div>', unsafe_allow_html=True)
 
-                c1, c2, c3, c4, c5 = st.columns(5)
-
-                with c1:
-                    st.markdown(
-                        f'<div class="stat-box"><div class="stat-num" style="color:#3fb950">{inc_tot}</div>'
-                        f'<div class="stat-lbl">✅ Included</div></div>',
-                        unsafe_allow_html=True
-                    )
-
-                with c2:
-                    st.markdown(
-                        f'<div class="stat-box"><div class="stat-num" style="color:#f85149">{exc_tot}</div>'
-                        f'<div class="stat-lbl">❌ Excluded E4</div></div>',
-                        unsafe_allow_html=True
-                    )
-
-                with c3:
-                    st.markdown(
-                        f'<div class="stat-box"><div class="stat-num" style="color:#e3b341">{pend_tot}</div>'
-                        f'<div class="stat-lbl">⏳ Pending</div></div>',
-                        unsafe_allow_html=True
-                    )
-
-                with c4:
-                    st.markdown(
-                        f'<div class="stat-box"><div class="stat-num" style="color:#8b949e">{skip_tot}</div>'
-                        f'<div class="stat-lbl">⏭️ Skipped</div></div>',
-                        unsafe_allow_html=True
-                    )
-
-                with c5:
-                    st.markdown(
-                        f'<div class="stat-box"><div class="stat-num">{inc_tot + exc_tot + pend_tot + skip_tot}</div>'
-                        f'<div class="stat-lbl">Total</div></div>',
-                        unsafe_allow_html=True
-                    )
-
-                st.markdown(
-                    '<div class="warn-box">🟢 Include = keyword match · 🔴 Exclude E4 = no match in title+abstract · '
-                    '🟡 Pending = abstract missing</div>',
-                    unsafe_allow_html=True
-                )
-
-                buf = io.BytesIO()
-                wb.save(buf)
-                buf.seek(0)
-
-                st.download_button(
-                    "📥 Download Screened Excel",
-                    data=buf.read(),
+                buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+                st.download_button("📥 Download Screened Excel", data=buf.read(),
                     file_name=f"screened_{datetime.now():%Y%m%d_%H%M}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                    type="primary",
-                    key="dl_screened"
-                )
+                    use_container_width=True, type="primary", key="dl_screened")
 
     elif screener_xl and not search_input.strip():
         st.info("Paste your search strings on the right.")
-
     else:
         st.markdown("""
         <div class="sr-card"><h3 style="margin-top:0;">📋 How to use</h3>
@@ -2540,5 +1221,430 @@ with tab2:
         <li>Download updated Excel</li>
         </ol>
         <p style="color:#8b949e;font-size:0.85rem;">Already auto-excluded rows skipped. Include = keyword in title or abstract. Pending = abstract missing.</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+with tab3:
+    import re as _re3
+
+    st.markdown("""
+    <div style="text-align:center;padding:10px 0 20px 0;">
+    <h2 style="font-size:1.8rem;margin-bottom:6px;">📋 Generic Importer</h2>
+    <p style="color:#8b949e;margin:0;">Upload any academic database files → PRISMA + Screening Sheet + Concept Matrix</p>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown("---")
+
+    col_gh, col_gr = st.columns([4,1])
+    with col_gh:
+        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📁 Upload Files</h3><p style="color:#8b949e;margin-bottom:8px;">Name files with database prefix: <code>springer_*.csv</code>, <code>scopus_*.csv</code>, <code>scholar_*.csv</code>, <code>acm_*.bib</code><br>No query ID required.</p></div>', unsafe_allow_html=True)
+    with col_gr:
+        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+        if st.button("🔄 Reset", key="reset_tab3", use_container_width=True):
+            for k in list(st.session_state.keys()):
+                if k.startswith("g3_"): del st.session_state[k]
+            st.rerun()
+
+    st.caption("Supports: Springer CSV · Scopus CSV · Google Scholar CSV · ACM BibTeX")
+
+    g3_uploaded = st.file_uploader("Drop files here", type=["csv","bib"],
+                                    accept_multiple_files=True,
+                                    label_visibility="collapsed", key="g3_uploader")
+
+    if g3_uploaded:
+        # ── Parse ────────────────────────────────────────────────────────────
+        def g3_paper(title="", authors="", year="", source="", doi="", url="",
+                     ptype="", database="", keywords=""):
+            return {
+                "title": title, "authors": authors, "year": str(year),
+                "source": source, "doi": doi, "abstract": "", "url": url,
+                "type": ptype, "database": database, "keywords": keywords,
+                "screening_status": "Pending", "exclusion_reason": "", "notes": "",
+                "auto_excluded": False,
+            }
+
+        def g3_parse_springer(content):
+            papers = []
+            try:
+                for row in csv.DictReader(io.StringIO(content)):
+                    papers.append(g3_paper(
+                        title=row.get("Item Title","").strip(),
+                        authors=row.get("Authors","").strip(),
+                        year=str(row.get("Publication Year","")).strip(),
+                        source=(row.get("Publication Title","") or row.get("Book Series Title","")).strip(),
+                        doi=row.get("Item DOI","").strip(),
+                        url=row.get("ArticleURL","").strip() or row.get("URL","").strip(),
+                        ptype=row.get("Content Type","").strip(),
+                        database="Springer",
+                        keywords=row.get("Keywords","").strip()))
+            except: pass
+            return papers
+
+        def g3_parse_scopus(content):
+            papers = []
+            try:
+                for row in csv.DictReader(io.StringIO(content)):
+                    kw = "; ".join(filter(None,[row.get("Author Keywords","").strip(), row.get("Index Keywords","").strip()]))
+                    papers.append(g3_paper(
+                        title=row.get("Title","").strip(),
+                        authors=row.get("Authors","").strip(),
+                        year=str(row.get("Year","")).strip(),
+                        source=row.get("Source title","").strip() or row.get("Source","").strip(),
+                        doi=row.get("DOI","").strip(),
+                        url=row.get("Link","").strip() or row.get("ArticleURL","").strip(),
+                        ptype=row.get("Document Type","").strip() or row.get("Type","").strip(),
+                        database="Scopus",
+                        keywords=kw or row.get("Keywords","").strip()))
+            except: pass
+            return papers
+
+        def g3_parse_scholar(content):
+            papers = []
+            try:
+                for row in csv.DictReader(io.StringIO(content)):
+                    papers.append(g3_paper(
+                        title=row.get("Title","").strip(),
+                        authors=row.get("Authors","").strip(),
+                        year=str(row.get("Year","")).strip(),
+                        source=row.get("Source","").strip(),
+                        doi=row.get("DOI","").strip(),
+                        url=row.get("ArticleURL","").strip() or row.get("URL","").strip(),
+                        ptype=row.get("Type","article").strip(),
+                        database="Google Scholar",
+                        keywords=row.get("Keywords","").strip()))
+            except: pass
+            return papers
+
+        def g3_parse_bib(content):
+            papers = []
+            for entry in _re3.split(r'\n@', content):
+                if not entry.strip(): continue
+                if not entry.startswith('@'): entry = '@' + entry
+                def gf(field, text):
+                    pat = rf'{_re3.escape(field)}\s*=\s*\{{(.+?)\}}\s*[,\}}]|{_re3.escape(field)}\s*=\s*"(.+?)"\s*[,\}}]'
+                    m = _re3.search(pat, text, _re3.IGNORECASE|_re3.DOTALL)
+                    if m: r = m.group(1) if m.group(1) else m.group(2); return r.strip().replace('\n',' ')
+                    return ""
+                papers.append(g3_paper(
+                    title=gf("title",entry), authors=gf("author",entry), year=gf("year",entry),
+                    source=gf("booktitle",entry) or gf("journal",entry), doi=gf("doi",entry),
+                    url=gf("url",entry),
+                    ptype="Conference Paper" if "inproceedings" in entry[:30].lower() else "Article",
+                    database="ACM",
+                    keywords=gf("keywords",entry) or gf("keyword",entry)))
+            return [p for p in papers if p["title"]]
+
+        def g3_detect(content, fname):
+            first = content.split('\n')[0].lower()
+            second = content.split('\n')[1].lower() if len(content.split('\n'))>1 else ""
+            if "springer" in fname: return "springer"
+            if "scopus" in fname: return "scopus"
+            if "scholar" in fname: return "scholar"
+            if "item title" in first: return "springer"
+            if "source title" in first: return "scopus"
+            if "scopus.com" in second: return "scopus"
+            return "scholar"
+
+        def g3_dedup(papers):
+            sorted_p = sorted(papers, key=lambda p: (
+                bool(p.get("abstract","").strip())*3 +
+                bool(p.get("doi","").strip())*2 +
+                bool(p.get("authors","").strip())
+            ), reverse=True)
+            seen_doi, seen_title, unique, dupes = set(), set(), [], []
+            for p in sorted_p:
+                doi = p.get("doi","").strip().lower()
+                title = p.get("title","").strip().lower()[:120]
+                if doi:
+                    if doi in seen_doi: dupes.append(p); continue
+                    seen_doi.add(doi)
+                else:
+                    if title and title in seen_title: dupes.append(p); continue
+                if title: seen_title.add(title)
+                unique.append(p)
+            return unique, dupes
+
+        def g3_is_valid_year(y):
+            return str(y).strip().isdigit() and 2015 <= int(str(y).strip()) <= 2026
+
+        def g3_auto_screen(papers):
+            counts = {"E1":0, "E2":0, "E7":0}
+            for p in papers:
+                year = str(p.get("year","")).strip()
+                if year and year.isdigit() and not g3_is_valid_year(year):
+                    p.update(screening_status="Exclude", exclusion_reason="E1",
+                             notes=f"Auto: year {year} outside 2015-2026", auto_excluded=True)
+                    counts["E1"] += 1; continue
+                if not year or not year.isdigit():
+                    p["notes"] = "Year missing — check manually"; continue
+                text = p.get("title","") + " " + p.get("source","")
+                is_eng, reason = is_english_text(text)
+                if not is_eng:
+                    p.update(screening_status="Exclude", exclusion_reason="E2",
+                             notes=f"Auto: not English — {reason}", auto_excluded=True)
+                    counts["E2"] += 1; continue
+                if not p.get("title","").strip() or not p.get("authors","").strip():
+                    p.update(screening_status="Exclude", exclusion_reason="E7",
+                             notes="Auto: missing title or authors", auto_excluded=True)
+                    counts["E7"] += 1
+            return papers, counts
+
+        # Parse all files
+        all_papers3 = []
+        parse_log3 = []
+
+        for f in g3_uploaded:
+            fname = f.name.lower()
+            cf = f.read().decode("utf-8", errors="replace")
+            if fname.endswith(".bib"):
+                papers = g3_parse_bib(cf); db = "ACM"
+            else:
+                ctype = g3_detect(cf, fname)
+                if ctype == "springer":   papers = g3_parse_springer(cf); db = "Springer"
+                elif ctype == "scopus":   papers = g3_parse_scopus(cf);   db = "Scopus"
+                else:                     papers = g3_parse_scholar(cf);   db = "Google Scholar"
+            parse_log3.append((f.name, db, len(papers)))
+            all_papers3.extend(papers)
+
+        unique3, dupes3 = g3_dedup(all_papers3)
+        unique3, counts3 = g3_auto_screen(unique3)
+        pending3 = [p for p in unique3 if p.get("screening_status")=="Pending"]
+
+        # Show parse log
+        st.markdown('<div class="sr-card"><h3 style="margin-top:0;">📊 Files Parsed</h3></div>', unsafe_allow_html=True)
+        for fname, db, n in parse_log3:
+            db_cls = {"Springer":"springer","ACM":"acm","Scopus":"scopus","Google Scholar":"scholar"}.get(db,"springer")
+            st.markdown(f"<div style='margin:4px 0;'><code>{fname}</code> → <span class='tag tag-{db_cls}'>{db}</span> → <b>{n} papers</b></div>", unsafe_allow_html=True)
+
+        # Summary stats
+        st.markdown("---")
+        c1,c2,c3,c4 = st.columns(4)
+        with c1: st.markdown(f'<div class="stat-box"><div class="stat-num">{len(all_papers3)}</div><div class="stat-lbl">Total Raw</div></div>', unsafe_allow_html=True)
+        with c2: st.markdown(f'<div class="stat-box"><div class="stat-num">{len(dupes3)}</div><div class="stat-lbl">Duplicates</div></div>', unsafe_allow_html=True)
+        with c3: st.markdown(f'<div class="stat-box"><div class="stat-num">{len(unique3)}</div><div class="stat-lbl">Unique</div></div>', unsafe_allow_html=True)
+        with c4: st.markdown(f'<div class="stat-box"><div class="stat-num">{len(pending3)}</div><div class="stat-lbl">Pending Screen</div></div>', unsafe_allow_html=True)
+
+        # Concept matrix topic input
+        st.markdown("---")
+        g3_topic = st.text_input("Topic / Research area (for Concept Matrix header)", 
+                                  placeholder="e.g. Digital Transformation, IoT Security, NLP Applications",
+                                  key="g3_topic")
+        g3_concepts_raw = st.text_area("Concept Matrix columns (one per line)",
+                                        placeholder="Machine Learning\nData Privacy\nScalability\nInteroperability\nUser Experience\nSecurity\nPerformance\nCost Efficiency",
+                                        height=140, key="g3_concepts")
+
+        # Generate button
+        st.markdown(f'<div class="sr-card"><h3 style="margin-top:0;">🚀 Generate Workbook</h3><p style="color:#8b949e;margin-bottom:0;">One Excel with PRISMA + Screening + Concept Matrix for <b>{len(unique3)} papers</b></p></div>', unsafe_allow_html=True)
+
+        fetch3 = st.checkbox("Fetch abstracts automatically", value=True, key="g3_fetch")
+        with st.expander("⚙️ Options"):
+            workers3 = st.slider("Concurrent workers", 1, 5, 3, key="g3_workers")
+
+        if st.button("🚀 Generate Workbook", type="primary", use_container_width=True, key="g3_generate"):
+            need3 = [p for p in pending3 if p.get("doi","") or p.get("url","")]
+            prog3 = st.progress(0); s3 = st.empty(); d3 = st.empty()
+
+            if fetch3 and need3:
+                t0 = time.time(); total3 = len(need3); found3 = done3 = 0
+                s3.markdown("🔄 **Fetching abstracts...**")
+
+                def fetch3_one(ip):
+                    i,p = ip
+                    ab, kw, au = fetch_abstract_keywords_authors_for_paper(p)
+                    return i, ab, kw, au
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers3) as ex:
+                    futs = {ex.submit(fetch3_one,(i,p)):i for i,p in enumerate(need3)}
+                    for fut in concurrent.futures.as_completed(futs):
+                        idx,ab,kw,au = fut.result()
+                        if ab: need3[idx]["abstract"]=ab; found3+=1
+                        if kw and not need3[idx].get("keywords",""): need3[idx]["keywords"]=kw
+                        if au and _author_count(au) > _author_count(need3[idx].get("authors","")): need3[idx]["authors"]=au
+                        done3+=1
+                        pct=int(done3/total3*100); prog3.progress(pct/100)
+                        elapsed=time.time()-t0; rate=done3/elapsed if elapsed>0 else 1
+                        m,sec=divmod(int((total3-done3)/rate),60)
+                        d3.markdown(f"**{pct}%** · ⏱ {m}m {sec}s · ✅ {found3}/{done3}")
+
+                prog3.progress(1.0)
+                s3.markdown(f"✅ Done! {found3}/{total3} abstracts in {int(time.time()-t0)}s")
+                d3.empty()
+
+            # Build Excel
+            s3.markdown("📊 **Building workbook...**")
+
+            import openpyxl
+            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+            from openpyxl.utils import get_column_letter
+            from openpyxl.worksheet.datavalidation import DataValidation
+
+            H_FILL    = PatternFill("solid", start_color="1F4E79")
+            H_FONT    = Font(bold=True, color="FFFFFF", name="Arial", size=10)
+            AUTO_FILL = PatternFill("solid", start_color="E8F5E9")
+            THIN      = Side(style="thin", color="BFBFBF")
+            BDR       = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+
+            wb3 = openpyxl.Workbook()
+
+            COLS3 = [
+                ("Database",14),("Title",50),("Authors",40),("Year",6),
+                ("Source / Journal",26),("DOI",28),("URL",28),
+                ("Keywords",35),("Abstract",60),
+                ("Screening Status",14),("Exclusion Reason",20),("Notes",30),
+            ]
+
+            def write3(ws, plist, rfn=None, start=1):
+                ws.freeze_panes = f"A{start+1}"
+                for ci,(name,w) in enumerate(COLS3,1):
+                    c=ws.cell(row=start,column=ci,value=name)
+                    c.font=H_FONT; c.fill=H_FILL; c.border=BDR
+                    c.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True)
+                    ws.column_dimensions[get_column_letter(ci)].width=w
+                ws.row_dimensions[start].height=32
+                for ri,p in enumerate(plist,start+1):
+                    fill = rfn(p) if rfn else (AUTO_FILL if p.get("auto_excluded") else PatternFill("solid",start_color="FFFFFF"))
+                    vals=[p.get("database",""),p.get("title",""),p.get("authors",""),
+                          p.get("year",""),p.get("source","")[:60],p.get("doi",""),
+                          p.get("url","")[:100],p.get("keywords",""),p.get("abstract",""),
+                          p.get("screening_status","Pending"),p.get("exclusion_reason",""),p.get("notes","")]
+                    for ci,val in enumerate(vals,1):
+                        c=ws.cell(row=ri,column=ci,value=val)
+                        c.fill=fill; c.border=BDR; c.font=Font(name="Arial",size=9)
+                        c.alignment=Alignment(wrap_text=True,vertical="top")
+                ws.auto_filter.ref=f"A{start}:{get_column_letter(len(COLS3))}{start+len(plist)}"
+                if plist:
+                    dv1=DataValidation(type="list",formula1='"Pending,Include,Exclude"',allow_blank=True)
+                    ws.add_data_validation(dv1); dv1.add(f'J{start+1}:J{start+len(plist)}')
+                    dv2=DataValidation(type="list",formula1='"E1,E2,E3,E4,E5,E6,E7,E8,E9,"',allow_blank=True)
+                    ws.add_data_validation(dv2); dv2.add(f'K{start+1}:K{start+len(plist)}')
+
+            # Sheet 1: PRISMA
+            ws_p = wb3.active; ws_p.title = "PRISMA_Flow"
+            ws_p.sheet_view.showGridLines = False
+            ws_p.column_dimensions["A"].width = 3
+            ws_p["B2"].value = f"PRISMA 2020 Flow Tracker — {g3_topic or 'Generic Review'}"
+            ws_p["B2"].font = Font(bold=True,size=14,color="1F4E79",name="Arial")
+            ws_p.merge_cells("B2:H2")
+            hdrs=["Phase","Step","n (raw)","n (after filter)","Notes"]
+            wids=[18,42,12,16,60]
+            for ci,(h,w) in enumerate(zip(hdrs,wids),2):
+                c=ws_p.cell(row=4,column=ci,value=h); c.font=H_FONT; c.fill=H_FILL; c.border=BDR
+                c.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True)
+                ws_p.column_dimensions[get_column_letter(ci)].width=w
+            ws_p.row_dimensions[4].height=28
+            ph={"Identification":"D6E4F0","Screening":"D5E8D4","Eligibility":"FFF2CC","Included":"FCE4D6"}
+            rows_p=[
+                ["Identification","Records identified",len(all_papers3),"","From all uploaded files"],
+                ["Identification","Duplicates removed",len(dupes3),"",""],
+                ["Identification","After deduplication",len(unique3),"",""],
+                ["Screening",f"Auto E1 (invalid year)",counts3["E1"],"","Auto-detected"],
+                ["Screening",f"Auto E2 (not English)",counts3["E2"],"","Auto-detected"],
+                ["Screening",f"Auto E7 (missing data)",counts3["E7"],"","Auto-detected"],
+                ["Screening","Pending manual screening",len(pending3),"","See Screening_Sheet"],
+                ["Screening","Excluded — title screen","","","Fill after manual review"],
+                ["Screening","Excluded — abstract screen","","","Fill after manual review"],
+                ["Screening","Reports not retrieved","","",""],
+                ["Eligibility","Assessed for eligibility","","",""],
+                ["Eligibility","Excluded with reasons","","","E1-E9 see Exclusion_Criteria"],
+                ["Included","Studies included","","","Fill after full screening"],
+            ]
+            for ri,row in enumerate(rows_p,5):
+                fill=PatternFill("solid",start_color=ph.get(row[0],"FFFFFF"))
+                if "auto" in str(row[1]).lower(): fill=AUTO_FILL
+                elif "duplicate" in str(row[1]).lower(): fill=PatternFill("solid",start_color="FFF2CC")
+                for ci,val in enumerate(row,2):
+                    c=ws_p.cell(row=ri,column=ci,value=val); c.fill=fill; c.border=BDR
+                    c.font=Font(name="Arial",size=9); c.alignment=Alignment(wrap_text=True,vertical="center")
+
+            # Sheet 2: Screening
+            non_scholar3 = [p for p in unique3 if p.get("database","") != "Google Scholar"]
+            ws_sc = wb3.create_sheet("Screening_Sheet"); write3(ws_sc, non_scholar3)
+
+            # Sheet 3: Google Scholar (if any)
+            scholar3 = [p for p in unique3 if p.get("database","") == "Google Scholar"]
+            if scholar3:
+                ws_gs3 = wb3.create_sheet("Google_Scholar_Screening"); write3(ws_gs3, scholar3)
+
+            # Sheet 4: Concept Matrix
+            ws_cm = wb3.create_sheet("Concept_Matrix_W&W")
+            ws_cm.column_dimensions["A"].width=3; ws_cm.column_dimensions["B"].width=4
+            ws_cm["C2"].value=f"Webster & Watson (2002) Concept Matrix — {g3_topic or 'Generic Review'}"
+            ws_cm["C2"].font=Font(bold=True,size=14,color="1F4E79",name="Arial")
+            ws_cm.merge_cells("C2:T2")
+            ws_cm["C3"].value="Add included papers as rows. Mark 'X' where concept is addressed."
+            ws_cm["C3"].font=Font(italic=True,size=9,color="595959")
+
+            # Parse user-provided concepts or use defaults
+            concepts3 = [c.strip() for c in g3_concepts_raw.strip().splitlines() if c.strip()] if g3_concepts_raw.strip() else [
+                "Theory/Model","Empirical Study","Case Study","Survey","Framework",
+                "Algorithm","Evaluation","Scalability","Security","Ethics",
+                "Automation","Performance","Cost","Implementation","Future Work","Limitations"
+            ]
+            concepts3 = concepts3[:20]  # max 20 columns
+            cfills3 = ["D6E4F0"]*len(concepts3)
+
+            ws_cm.merge_cells(f"C5:{get_column_letter(4+len(concepts3))}5")
+            c=ws_cm["C5"]; c.value=g3_topic or "Generic Review"
+            c.fill=PatternFill("solid",start_color="1F4E79")
+            c.font=Font(bold=True,color="FFFFFF",name="Arial",size=9); c.alignment=Alignment(horizontal="center")
+
+            for ci,(h,w) in enumerate([("Author(s) Year",28),("Title",40)],3):
+                c=ws_cm.cell(row=6,column=ci,value=h); c.font=H_FONT; c.fill=H_FILL; c.border=BDR
+                c.alignment=Alignment(horizontal="center",vertical="bottom")
+                ws_cm.column_dimensions[get_column_letter(ci)].width=w
+
+            for ci,(concept,cf) in enumerate(zip(concepts3,cfills3),5):
+                c=ws_cm.cell(row=6,column=ci,value=concept)
+                c.fill=PatternFill("solid",start_color=cf); c.font=Font(bold=True,name="Arial",size=8,color="1F4E79")
+                c.alignment=Alignment(text_rotation=90,horizontal="center",vertical="bottom",wrap_text=True)
+                c.border=BDR; ws_cm.column_dimensions[get_column_letter(ci)].width=5
+            ws_cm.row_dimensions[6].height=80
+
+            for ri in range(7,57):
+                alt=PatternFill("solid",start_color="F8F8F8") if ri%2==0 else PatternFill()
+                for ci in range(3,5+len(concepts3)):
+                    c=ws_cm.cell(row=ri,column=ci,value=""); c.border=BDR; c.fill=alt
+                    c.font=Font(name="Arial",size=10); c.alignment=Alignment(horizontal="center",vertical="center")
+                ws_cm.row_dimensions[ri].height=18
+
+            # Sheet 5: Exclusion Criteria
+            ws_ec = wb3.create_sheet("Exclusion_Criteria")
+            ws_ec["B2"].value="Exclusion Criteria (PRISMA)"; ws_ec.column_dimensions["B"].width=65
+            ws_ec["B2"].font=Font(bold=True,size=13,color="1F4E79",name="Arial")
+            ecolors=["FFE0E0","FFE0E0","FFF2CC","FFF2CC","D5E8D4","D5E8D4","D6E4F0","D6E4F0","F3E5F5"]
+            for ri,crit in enumerate(EXCLUSION_CRITERIA,4):
+                c=ws_ec.cell(row=ri,column=2,value=crit); c.font=Font(name="Arial",size=10)
+                c.fill=PatternFill("solid",start_color=ecolors[ri-4] if ri-4<len(ecolors) else "FFFFFF")
+                c.border=BDR; ws_ec.row_dimensions[ri].height=22
+
+            buf3=io.BytesIO(); wb3.save(buf3); buf3.seek(0)
+            st.session_state["g3_excel"]=buf3.read()
+            st.session_state["g3_fname"]=f"generic_review_{datetime.now():%Y%m%d_%H%M}.xlsx"
+            st.session_state["g3_ready"]=True
+            st.session_state["g3_stats"]=(len(unique3), sum(1 for p in unique3 if p.get("abstract","")), len(dupes3))
+            s3.empty(); prog3.empty()
+
+        if st.session_state.get("g3_ready"):
+            st.markdown("---")
+            n3,a3,d3v=st.session_state["g3_stats"]
+            sheets_note = "PRISMA · Screening · Google Scholar · Concept Matrix · Exclusion Criteria" if any(p.get("database")=="Google Scholar" for p in unique3) else "PRISMA · Screening · Concept Matrix · Exclusion Criteria"
+            st.markdown(f'<div class="sheet-card"><b>generic_review.xlsx</b> — {sheets_note}</div>', unsafe_allow_html=True)
+            st.download_button("📥 Download Excel",
+                data=st.session_state["g3_excel"],
+                file_name=st.session_state["g3_fname"],
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True, type="primary", key="dl_g3")
+            st.success(f"✅ {n3} papers · {a3} with abstract · {d3v} dupes removed")
+
+    else:
+        st.markdown("""
+        <div class="sr-card"><h3 style="margin-top:0;">📋 How to use</h3>
+        <ol style="color:#8b949e;line-height:2.2;">
+        <li>Upload any CSV/BIB files — name with <code>springer_</code>, <code>scopus_</code>, <code>scholar_</code>, or <code>acm_</code> prefix</li>
+        <li>Enter your topic and concept matrix columns (or use defaults)</li>
+        <li>Click <b>🚀 Generate Workbook</b></li>
+        <li>Download Excel with PRISMA + Screening + Concept Matrix</li>
+        </ol>
+        <p style="color:#8b949e;font-size:0.85rem;">No dimensions or query IDs needed. Works for any research topic.</p>
         </div>
         """, unsafe_allow_html=True)
