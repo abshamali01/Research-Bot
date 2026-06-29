@@ -1449,36 +1449,36 @@ with tab3:
                 s3.markdown("🔄 **Fetching abstracts...**")
 
                 def fetch3_one(ip):
-    i, p = ip
-    ab, kw = fetch_abstract_and_keywords_for_paper(p)
-    return i, ab, kw
-
-with concurrent.futures.ThreadPoolExecutor(max_workers=workers3) as ex:
-    futs = {ex.submit(fetch3_one, (i, p)): i for i, p in enumerate(need3)}
-
-    for fut in concurrent.futures.as_completed(futs):
-        try:
-            idx, ab, kw = fut.result()
-        except Exception:
-            idx = futs[fut]
-            ab, kw = "", ""
-
-        if ab:
-            need3[idx]["abstract"] = ab
-            found3 += 1
-
-        if kw and not need3[idx].get("keywords", ""):
-            need3[idx]["keywords"] = kw
-
-        done3 += 1
-        pct = int(done3 / total3 * 100)
-        prog3.progress(pct / 100)
-
-        elapsed = time.time() - t0
-        rate = done3 / elapsed if elapsed > 0 else 1
-        m, sec = divmod(int((total3 - done3) / rate), 60)
-
-        d3.markdown(f"**{pct}%** · ⏱ {m}m {sec}s · ✅ {found3}/{done3}")
+                    i, p = ip
+                    ab, kw = fetch_abstract_and_keywords_for_paper(p)
+                    return i, ab, kw
+                
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers3) as ex:
+                    futs = {ex.submit(fetch3_one, (i, p)): i for i, p in enumerate(need3)}
+                
+                    for fut in concurrent.futures.as_completed(futs):
+                        try:
+                            idx, ab, kw = fut.result()
+                        except Exception:
+                            idx = futs[fut]
+                            ab, kw = "", ""
+                
+                        if ab:
+                            need3[idx]["abstract"] = ab
+                            found3 += 1
+                
+                        if kw and not need3[idx].get("keywords", ""):
+                            need3[idx]["keywords"] = kw
+                
+                        done3 += 1
+                        pct = int(done3 / total3 * 100)
+                        prog3.progress(pct / 100)
+                
+                        elapsed = time.time() - t0
+                        rate = done3 / elapsed if elapsed > 0 else 1
+                        m, sec = divmod(int((total3 - done3) / rate), 60)
+                
+                        d3.markdown(f"**{pct}%** · ⏱ {m}m {sec}s · ✅ {found3}/{done3}")
 
                 prog3.progress(1.0)
                 s3.markdown(f"✅ Done! {found3}/{total3} abstracts in {int(time.time()-t0)}s")
