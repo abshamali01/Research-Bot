@@ -1269,14 +1269,14 @@ with tab3:
         # ── Parse ────────────────────────────────────────────────────────────
         def g3_paper(title="", authors="", year="", source="", doi="", url="",
              ptype="", database="", keywords=""):
-    return {
-        "title": title, "authors": authors, "year": str(year),
-        "source": source, "doi": doi, "abstract": "", "url": url,
-        "type": ptype, "database": database, "keywords": keywords,
-        "screening_status": "Pending", "exclusion_reason": "", "notes": "",
-        "relevanz": "", "themenbereich": "", "art_der_quelle": "",   # NEW
-        "auto_excluded": False,
-    }
+                return {
+                    "title": title, "authors": authors, "year": str(year),
+                    "source": source, "doi": doi, "abstract": "", "url": url,
+                    "type": ptype, "database": database, "keywords": keywords,
+                    "screening_status": "Pending", "exclusion_reason": "", "notes": "",
+                    "relevanz": "", "themenbereich": "", "art_der_quelle": "",   # NEW
+                    "auto_excluded": False,
+                }
 
         def g3_parse_springer(content):
             papers = []
