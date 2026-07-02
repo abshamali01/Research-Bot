@@ -45,6 +45,7 @@ def _paper(title="", authors="", year="", source="", doi="", url="", ptype="",
         "dimension": QUERY_MAP.get(query_id, ""),
         "keywords": keywords,
         "screening_status": "Pending", "exclusion_reason": "", "notes": "",
+        "relevanz": "", "themenbereich": "", "art_der_quelle": "",   # NEW
         "auto_excluded": False,
     }
 
@@ -549,6 +550,7 @@ def build_dimension_excel(papers, dupe_list, dim_code, dim_name):
     wb = openpyxl.Workbook()
 
     # ── Column definitions — now includes Authors (full) + Keywords ──
+    # ── Column definitions — now includes Authors (full) + Keywords + Relevanz/Themenbereich/Art der Quelle ──
     COLS = [
         ("Database",       14),
         ("Title",          50),
@@ -557,11 +559,14 @@ def build_dimension_excel(papers, dupe_list, dim_code, dim_name):
         ("Source / Journal",26),
         ("DOI",            28),
         ("URL",            28),
-        ("Keywords",       35),   # NEW
+        ("Keywords",       35),
         ("Abstract",       60),
         ("Screening Status",14),
         ("Exclusion Reason",20),
         ("Notes",          30),
+        ("Relevanz",       12),   # NEW: Hoch / Mittel / Niedrig
+        ("Themenbereich",  25),   # NEW: free text
+        ("Art der Quelle", 22),   # NEW: dropdown
     ]
 
     def write_screen(ws, plist, rfn=None, start=1):
@@ -587,6 +592,9 @@ def build_dimension_excel(papers, dupe_list, dim_code, dim_name):
                 p.get("screening_status","Pending"),
                 p.get("exclusion_reason",""),
                 p.get("notes",""),
+                p.get("relevanz",""),           # NEW
+                p.get("themenbereich",""),      # NEW
+                p.get("art_der_quelle",""),     # NEW
             ]
             for ci,val in enumerate(vals,1):
                 c=ws.cell(row=ri,column=ci,value=val)
@@ -598,6 +606,12 @@ def build_dimension_excel(papers, dupe_list, dim_code, dim_name):
             ws.add_data_validation(dv1); dv1.add(f'J{start+1}:J{start+len(plist)}')
             dv2=DataValidation(type="list",formula1='"E1,E2,E3,E4,E5,E6,E7,E8,E9,"',allow_blank=True)
             ws.add_data_validation(dv2); dv2.add(f'K{start+1}:K{start+len(plist)}')
+            # NEW: Relevanz dropdown -> column M (13th)
+            dv3=DataValidation(type="list",formula1='"Hoch,Mittel,Niedrig"',allow_blank=True)
+            ws.add_data_validation(dv3); dv3.add(f'M{start+1}:M{start+len(plist)}')
+            # NEW: Art der Quelle dropdown -> column O (15th)
+            dv4=DataValidation(type="list",formula1='"Research Article,Journal,Conference Paper,Peer Reviewed Paper,Short Paper,Other"',allow_blank=True)
+            ws.add_data_validation(dv4); dv4.add(f'O{start+1}:O{start+len(plist)}')
 
     # Sheet 1: PRISMA
     ws=wb.active; ws.title="PRISMA_Flow"; ws.sheet_view.showGridLines=False
@@ -1254,14 +1268,15 @@ with tab3:
     if g3_uploaded:
         # ── Parse ────────────────────────────────────────────────────────────
         def g3_paper(title="", authors="", year="", source="", doi="", url="",
-                     ptype="", database="", keywords=""):
-            return {
-                "title": title, "authors": authors, "year": str(year),
-                "source": source, "doi": doi, "abstract": "", "url": url,
-                "type": ptype, "database": database, "keywords": keywords,
-                "screening_status": "Pending", "exclusion_reason": "", "notes": "",
-                "auto_excluded": False,
-            }
+             ptype="", database="", keywords=""):
+    return {
+        "title": title, "authors": authors, "year": str(year),
+        "source": source, "doi": doi, "abstract": "", "url": url,
+        "type": ptype, "database": database, "keywords": keywords,
+        "screening_status": "Pending", "exclusion_reason": "", "notes": "",
+        "relevanz": "", "themenbereich": "", "art_der_quelle": "",   # NEW
+        "auto_excluded": False,
+    }
 
         def g3_parse_springer(content):
             papers = []
@@ -1505,6 +1520,7 @@ with tab3:
                 ("Source / Journal",26),("DOI",28),("URL",28),
                 ("Keywords",35),("Abstract",60),
                 ("Screening Status",14),("Exclusion Reason",20),("Notes",30),
+                ("Relevanz",12),("Themenbereich",25),("Art der Quelle",22),   # NEW
             ]
 
             def write3(ws, plist, rfn=None, start=1):
@@ -1520,7 +1536,8 @@ with tab3:
                     vals=[p.get("database",""),p.get("title",""),p.get("authors",""),
                           p.get("year",""),p.get("source","")[:60],p.get("doi",""),
                           p.get("url","")[:100],p.get("keywords",""),p.get("abstract",""),
-                          p.get("screening_status","Pending"),p.get("exclusion_reason",""),p.get("notes","")]
+                          p.get("screening_status","Pending"),p.get("exclusion_reason",""),p.get("notes",""),
+                          p.get("relevanz",""),p.get("themenbereich",""),p.get("art_der_quelle","")]   # NEW
                     for ci,val in enumerate(vals,1):
                         c=ws.cell(row=ri,column=ci,value=val)
                         c.fill=fill; c.border=BDR; c.font=Font(name="Arial",size=9)
@@ -1531,6 +1548,10 @@ with tab3:
                     ws.add_data_validation(dv1); dv1.add(f'J{start+1}:J{start+len(plist)}')
                     dv2=DataValidation(type="list",formula1='"E1,E2,E3,E4,E5,E6,E7,E8,E9,"',allow_blank=True)
                     ws.add_data_validation(dv2); dv2.add(f'K{start+1}:K{start+len(plist)}')
+                    dv3=DataValidation(type="list",formula1='"Hoch,Mittel,Niedrig"',allow_blank=True)
+                    ws.add_data_validation(dv3); dv3.add(f'M{start+1}:M{start+len(plist)}')
+                    dv4=DataValidation(type="list",formula1='"Research Article,Journal,Conference Paper,Peer Reviewed Paper,Short Paper,Other"',allow_blank=True)
+                    ws.add_data_validation(dv4); dv4.add(f'O{start+1}:O{start+len(plist)}')
 
             # Sheet 1: PRISMA
             ws_p = wb3.active; ws_p.title = "PRISMA_Flow"
